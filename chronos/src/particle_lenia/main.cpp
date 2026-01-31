@@ -22,6 +22,7 @@
 #include <iostream>
 #include <random>
 #include <vector>
+#include <omp.h>
 
 #include "core/Buffer.h"
 #include "core/ComputeShader.h"
@@ -33,9 +34,10 @@ int WINDOW_HEIGHT = 900;
 
 // Simulation parameters
 struct SimulationParams {
-  // World dimensions
+  // World dimensions (3D cube)
   float worldWidth = 40.0f;
   float worldHeight = 40.0f;
+  float worldDepth = 40.0f;
 
   // Particle count
   int numParticles = 500;
@@ -68,6 +70,7 @@ struct SimulationParams {
   // View parameters
   float translateX = 0.0f;
   float translateY = 0.0f;
+  float translateZ = 0.0f;
   float zoom = 1.0f;
 
   // Rendering
@@ -84,7 +87,7 @@ struct SimulationParams {
   bool showFood = true;             // Show food on display
 
   // 3D Rendering
-  bool view3D = false;
+  bool view3D = true;  // Default to 3D mode
   float cameraAngle = 45.0f;      // Degrees from horizontal
   float cameraRotation = 0.0f;    // Rotation around Y axis
   float cameraDistance = 60.0f;   // Distance from center
@@ -95,16 +98,18 @@ struct SimulationParams {
   float particleSize = 20.0f;     // 3D particle size
 };
 
-// Particle structure (must match shader)
+// Particle structure (must match shader) - 14 floats total
 struct Particle {
-  float x, y;     // Position
-  float vx, vy;   // Velocity
-  float energy;   // Health/energy [0, 1]
-  float species;  // Species ID (affects color)
-  float age;      // Age in simulation steps
-  float dna[5];   // Genetic parameters (mu_k, sigma_k2, mu_g, sigma_g2, c_rep
-                  // variations)
+  float x, y, z;      // Position (3D)
+  float vx, vy, vz;   // Velocity (3D)
+  float energy;       // Health/energy [0, 1]
+  float species;      // Species ID (affects color)
+  float age;          // Age in simulation steps
+  float dna[5];       // Genetic parameters (mu_k, sigma_k2, mu_g, sigma_g2, c_rep
+                      // variations)
 };
+
+constexpr int PARTICLE_FLOATS = 14;  // Number of floats per particle
 
 class ParticleLeniaSimulation {
  public:
@@ -145,9 +150,8 @@ class ParticleLeniaSimulation {
     // Initialize RNG
     rng = std::mt19937(std::random_device{}());
 
-    // Calculate buffer size: each particle has 12 floats
-    int particleFloats = 12;
-    int bufferSize = params.maxParticles * particleFloats;
+    // Calculate buffer size: each particle has 14 floats (3D)
+    int bufferSize = params.maxParticles * PARTICLE_FLOATS;
 
     particleBufferA = Buffer(bufferSize, GL_SHADER_STORAGE_BUFFER);
     particleBufferB = Buffer(bufferSize, GL_SHADER_STORAGE_BUFFER);
@@ -190,11 +194,19 @@ class ParticleLeniaSimulation {
 
     // Initialize food texture with some random food
     std::vector<float> foodData(foodGridSize * foodGridSize * 4, 0.0f);
-    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-    for (int i = 0; i < foodGridSize * foodGridSize; i++) {
-      if (dist(rng) < 0.1f) {  // 10% initial food coverage
-        foodData[i * 4 + 0] = dist(rng) * 0.5f;  // Food amount
-        foodData[i * 4 + 1] = 1.0f;              // Freshness
+    int totalCells = foodGridSize * foodGridSize;
+
+    #pragma omp parallel
+    {
+      std::mt19937 localRng(std::random_device{}() + omp_get_thread_num());
+      std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+
+      #pragma omp for
+      for (int i = 0; i < totalCells; i++) {
+        if (dist(localRng) < 0.1f) {  // 10% initial food coverage
+          foodData[i * 4 + 0] = dist(localRng) * 0.5f;  // Food amount
+          foodData[i * 4 + 1] = 1.0f;                   // Freshness
+        }
       }
     }
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, foodGridSize, foodGridSize, 
@@ -278,46 +290,50 @@ class ParticleLeniaSimulation {
   }
 
   void resetParticles() {
-    // Spawn particles uniformly in the world bounds
-    std::uniform_real_distribution<float> posDistX(-params.worldWidth / 2.0f,
-                                                   params.worldWidth / 2.0f);
-    std::uniform_real_distribution<float> posDistY(-params.worldHeight / 2.0f,
-                                                   params.worldHeight / 2.0f);
-    std::uniform_real_distribution<float> speciesDist(0.0f, 3.0f);
-    std::uniform_real_distribution<float> dnaDist(-0.2f, 0.2f);
+    // Spawn particles uniformly in the 3D world bounds
+    std::vector<float> data(params.maxParticles * PARTICLE_FLOATS);
 
-    std::vector<float> data;
-    data.reserve(params.maxParticles * 12);
+    // Parallel initialization with thread-local RNGs
+    #pragma omp parallel
+    {
+      // Each thread gets its own RNG seeded uniquely
+      std::mt19937 localRng(std::random_device{}() + omp_get_thread_num());
+      std::uniform_real_distribution<float> posDistX(-params.worldWidth / 2.0f,
+                                                     params.worldWidth / 2.0f);
+      std::uniform_real_distribution<float> posDistY(-params.worldHeight / 2.0f,
+                                                     params.worldHeight / 2.0f);
+      std::uniform_real_distribution<float> posDistZ(-params.worldDepth / 2.0f,
+                                                     params.worldDepth / 2.0f);
+      std::uniform_real_distribution<float> speciesDist(0.0f, 3.0f);
+      std::uniform_real_distribution<float> dnaDist(-0.2f, 0.2f);
 
-    for (int i = 0; i < params.maxParticles; i++) {
-      if (i < params.numParticles) {
-        // Position
-        data.push_back(posDistX(rng));
-        data.push_back(posDistY(rng));
-        // Velocity
-        data.push_back(0.0f);
-        data.push_back(0.0f);
-        // Energy
-        data.push_back(1.0f);
-        // Species
-        data.push_back(speciesDist(rng));
-        // Age
-        data.push_back(0.0f);
-        // DNA (5 values)
-        for (int d = 0; d < 5; d++) {
-          data.push_back(dnaDist(rng));
-        }
-      } else {
-        // Dead/inactive particle
-        data.push_back(0.0f);  // x
-        data.push_back(0.0f);  // y
-        data.push_back(0.0f);  // vx
-        data.push_back(0.0f);  // vy
-        data.push_back(0.0f);  // energy = 0 means dead
-        data.push_back(0.0f);  // species
-        data.push_back(0.0f);  // age
-        for (int d = 0; d < 5; d++) {
-          data.push_back(0.0f);
+      #pragma omp for
+      for (int i = 0; i < params.maxParticles; i++) {
+        int base = i * PARTICLE_FLOATS;
+        if (i < params.numParticles) {
+          // Position (3D)
+          data[base + 0] = posDistX(localRng);
+          data[base + 1] = posDistY(localRng);
+          data[base + 2] = posDistZ(localRng);
+          // Velocity (3D)
+          data[base + 3] = 0.0f;
+          data[base + 4] = 0.0f;
+          data[base + 5] = 0.0f;
+          // Energy
+          data[base + 6] = 1.0f;
+          // Species
+          data[base + 7] = speciesDist(localRng);
+          // Age
+          data[base + 8] = 0.0f;
+          // DNA (5 values)
+          for (int d = 0; d < 5; d++) {
+            data[base + 9 + d] = dnaDist(localRng);
+          }
+        } else {
+          // Dead/inactive particle (14 floats all zero)
+          for (int j = 0; j < PARTICLE_FLOATS; j++) {
+            data[base + j] = 0.0f;
+          }
         }
       }
     }
@@ -370,6 +386,7 @@ class ParticleLeniaSimulation {
     stepShader.setUniform("u_AliveCount", aliveCount);
     stepShader.setUniform("u_WorldWidth", params.worldWidth);
     stepShader.setUniform("u_WorldHeight", params.worldHeight);
+    stepShader.setUniform("u_WorldDepth", params.worldDepth);
     stepShader.setUniform("u_Wk", params.w_k);
     stepShader.setUniform("u_MuK", params.mu_k);
     stepShader.setUniform("u_SigmaK2", params.sigma_k2);
@@ -437,51 +454,28 @@ class ParticleLeniaSimulation {
   void display3D(int windowWidth, int windowHeight) {
     Buffer& activeBuffer = useBufferA ? particleBufferA : particleBufferB;
 
-    // === STEP 1: Generate heightmap from particles ===
-    heightmapShader.use();
-    
-    // Bind particle buffer
-    heightmapShader.bindBuffer("Particles", activeBuffer, 0);
-    
-    // Bind heightmap as image for writing
-    glBindImageTexture(0, heightmapTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
-    
-    heightmapShader.setUniform("u_HeightmapSize", terrainGridSize);
-    heightmapShader.setUniform("u_NumParticles", params.maxParticles);
-    heightmapShader.setUniform("u_WorldWidth", params.worldWidth);
-    heightmapShader.setUniform("u_WorldHeight", params.worldHeight);
-    heightmapShader.setUniform("u_Wk", params.w_k);
-    heightmapShader.setUniform("u_MuK", params.mu_k);
-    heightmapShader.setUniform("u_SigmaK2", params.sigma_k2);
-    
-    // Dispatch compute shader (one thread per heightmap texel)
-    int workGroupsX = (terrainGridSize + 15) / 16;
-    int workGroupsY = (terrainGridSize + 15) / 16;
-    heightmapShader.dispatch(workGroupsX, workGroupsY, 1);
-    heightmapShader.wait();
-
-    // === STEP 2: Build camera matrices ===
+    // === Build camera matrices ===
     float aspect = static_cast<float>(windowWidth) / static_cast<float>(windowHeight);
-    
+
     // Camera orbit around center
     float camRadius = params.cameraDistance;
     float camAngleRad = params.cameraAngle * 3.14159f / 180.0f;
     float camRotRad = params.cameraRotation * 3.14159f / 180.0f;
-    
+
     float camX = camRadius * std::cos(camRotRad) * std::cos(camAngleRad);
     float camY = camRadius * std::sin(camAngleRad);
     float camZ = camRadius * std::sin(camRotRad) * std::cos(camAngleRad);
-    
+
     // Simple view matrix (look at origin)
     float eye[3] = {camX, camY, camZ};
     float target[3] = {0.0f, 0.0f, 0.0f};
     float up[3] = {0.0f, 1.0f, 0.0f};
-    
+
     // Forward, right, up vectors
     float fwd[3] = {target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]};
     float fwdLen = std::sqrt(fwd[0]*fwd[0] + fwd[1]*fwd[1] + fwd[2]*fwd[2]);
     fwd[0] /= fwdLen; fwd[1] /= fwdLen; fwd[2] /= fwdLen;
-    
+
     float right[3] = {
       fwd[1] * up[2] - fwd[2] * up[1],
       fwd[2] * up[0] - fwd[0] * up[2],
@@ -489,13 +483,13 @@ class ParticleLeniaSimulation {
     };
     float rightLen = std::sqrt(right[0]*right[0] + right[1]*right[1] + right[2]*right[2]);
     right[0] /= rightLen; right[1] /= rightLen; right[2] /= rightLen;
-    
+
     float upVec[3] = {
       right[1] * fwd[2] - right[2] * fwd[1],
       right[2] * fwd[0] - right[0] * fwd[2],
       right[0] * fwd[1] - right[1] * fwd[0]
     };
-    
+
     // View matrix (column-major for OpenGL)
     float view[16] = {
       right[0], upVec[0], -fwd[0], 0.0f,
@@ -506,20 +500,20 @@ class ParticleLeniaSimulation {
       (fwd[0]*eye[0] + fwd[1]*eye[1] + fwd[2]*eye[2]),
       1.0f
     };
-    
+
     // Perspective projection
     float fov = 60.0f * 3.14159f / 180.0f;
     float nearPlane = 0.1f;
     float farPlane = 500.0f;
     float tanHalfFov = std::tan(fov / 2.0f);
-    
+
     float proj[16] = {
       1.0f / (aspect * tanHalfFov), 0.0f, 0.0f, 0.0f,
       0.0f, 1.0f / tanHalfFov, 0.0f, 0.0f,
       0.0f, 0.0f, -(farPlane + nearPlane) / (farPlane - nearPlane), -1.0f,
       0.0f, 0.0f, -(2.0f * farPlane * nearPlane) / (farPlane - nearPlane), 0.0f
     };
-    
+
     // Multiply view * proj -> viewProj (manual matrix multiply)
     float viewProj[16];
     for (int i = 0; i < 4; i++) {
@@ -536,57 +530,26 @@ class ParticleLeniaSimulation {
     glDepthFunc(GL_LESS);
     glClear(GL_DEPTH_BUFFER_BIT);
 
-    // === STEP 3: Render terrain ===
-    terrainShader.use();
-    
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, heightmapTexture);
-    terrainShader.setUniform("u_Heightmap", 0);
-    
-    terrainShader.setUniformMat4("u_ViewProjection", viewProj);
-    terrainShader.setUniform("u_WorldWidth", params.worldWidth);
-    terrainShader.setUniform("u_WorldHeight", params.worldHeight);
-    terrainShader.setUniform("u_MaxHeight", params.heightScale);
-    terrainShader.setUniform("u_TranslateX", params.translateX);
-    terrainShader.setUniform("u_TranslateY", params.translateY);
-    terrainShader.setUniform("u_Zoom", params.zoom);
-    terrainShader.setUniform("u_CameraPos", camX, camY, camZ);
-    terrainShader.setUniform("u_GlowIntensity", params.glowIntensity);
-    terrainShader.setUniform("u_AmbientLight", params.ambientLight);
-    terrainShader.setUniform("u_Wireframe", params.showWireframe ? 1 : 0);
-    
-    // Draw terrain mesh
-    glBindVertexArray(terrainVAO);
-    if (params.showWireframe) {
-      glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-    }
-    glDrawElements(GL_TRIANGLES, terrainIndexCount, GL_UNSIGNED_INT, 0);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-    glBindVertexArray(0);
-
-    // === STEP 4: Render 3D particles ===
+    // === Render 3D particles ===
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE);  // Additive blending for glow
     glEnable(GL_PROGRAM_POINT_SIZE);
 
     particle3DShader.use();
     particle3DShader.bindBuffer("Particles", activeBuffer, 0);
-    
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, heightmapTexture);
-    particle3DShader.setUniform("u_Heightmap", 0);
-    
+
     particle3DShader.setUniformMat4("u_ViewProjection", viewProj);
     particle3DShader.setUniform("u_NumParticles", params.maxParticles);
     particle3DShader.setUniform("u_WorldWidth", params.worldWidth);
     particle3DShader.setUniform("u_WorldHeight", params.worldHeight);
-    particle3DShader.setUniform("u_MaxHeight", params.heightScale);
+    particle3DShader.setUniform("u_WorldDepth", params.worldDepth);
     particle3DShader.setUniform("u_ParticleSize", params.particleSize);
     particle3DShader.setUniform("u_TranslateX", params.translateX);
     particle3DShader.setUniform("u_TranslateY", params.translateY);
+    particle3DShader.setUniform("u_TranslateZ", params.translateZ);
     particle3DShader.setUniform("u_Zoom", params.zoom);
     particle3DShader.setUniform("u_CameraPos", camX, camY, camZ);
-    
+
     // Render particles as points
     glBindVertexArray(particleVAO);  // Empty VAO, using gl_VertexID
     glDrawArrays(GL_POINTS, 0, params.maxParticles);
@@ -601,46 +564,50 @@ class ParticleLeniaSimulation {
     Buffer& activeBuffer = useBufferA ? particleBufferA : particleBufferB;
     std::vector<float> data = activeBuffer.getData();
 
-    aliveCount = 0;
+    int localAliveCount = 0;
     float totalEnergy = 0.0f;
     float totalAge = 0.0f;
 
+    #pragma omp parallel for reduction(+:localAliveCount, totalEnergy, totalAge)
     for (int i = 0; i < params.maxParticles; i++) {
-      int base = i * 12;
-      float energy = data[base + 4];
-      float age = data[base + 6];
+      int base = i * PARTICLE_FLOATS;
+      float energy = data[base + 6];  // Energy is now at index 6
+      float age = data[base + 8];     // Age is now at index 8
 
       if (energy > 0.01f) {
-        aliveCount++;
+        localAliveCount++;
         totalEnergy += energy;
         totalAge += age;
       }
     }
 
+    aliveCount = localAliveCount;
     avgEnergy = aliveCount > 0 ? totalEnergy / aliveCount : 0.0f;
     avgAge = aliveCount > 0 ? totalAge / aliveCount : 0.0f;
   }
 
-  void addParticle(float x, float y) {
+  void addParticle(float x, float y, float z) {
     Buffer& activeBuffer = useBufferA ? particleBufferA : particleBufferB;
     std::vector<float> data = activeBuffer.getData();
 
     // Find a dead slot
     for (int i = 0; i < params.maxParticles; i++) {
-      int base = i * 12;
-      if (data[base + 4] < 0.01f) {  // Dead particle
+      int base = i * PARTICLE_FLOATS;
+      if (data[base + 6] < 0.01f) {  // Dead particle (energy at index 6)
         std::uniform_real_distribution<float> speciesDist(0.0f, 3.0f);
         std::uniform_real_distribution<float> dnaDist(-0.2f, 0.2f);
 
         data[base + 0] = x;                 // x
         data[base + 1] = y;                 // y
-        data[base + 2] = 0.0f;              // vx
-        data[base + 3] = 0.0f;              // vy
-        data[base + 4] = 1.0f;              // energy
-        data[base + 5] = speciesDist(rng);  // species
-        data[base + 6] = 0.0f;              // age
+        data[base + 2] = z;                 // z
+        data[base + 3] = 0.0f;              // vx
+        data[base + 4] = 0.0f;              // vy
+        data[base + 5] = 0.0f;              // vz
+        data[base + 6] = 1.0f;              // energy
+        data[base + 7] = speciesDist(rng);  // species
+        data[base + 8] = 0.0f;              // age
         for (int d = 0; d < 5; d++) {
-          data[base + 7 + d] = dnaDist(rng);
+          data[base + 9 + d] = dnaDist(rng);
         }
 
         activeBuffer.setData(data);
@@ -668,6 +635,32 @@ void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
 void processInput(GLFWwindow* window) {
   if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
     glfwSetWindowShouldClose(window, true);
+  }
+
+  // Camera rotation with WASD
+  float rotSpeed = 2.0f;
+  float angleSpeed = 1.0f;
+
+  if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+    simulation.params.cameraAngle = std::min(89.0f, simulation.params.cameraAngle + angleSpeed);
+  }
+  if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+    simulation.params.cameraAngle = std::max(5.0f, simulation.params.cameraAngle - angleSpeed);
+  }
+  if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+    simulation.params.cameraRotation = std::fmod(simulation.params.cameraRotation - rotSpeed + 360.0f, 360.0f);
+  }
+  if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+    simulation.params.cameraRotation = std::fmod(simulation.params.cameraRotation + rotSpeed, 360.0f);
+  }
+
+  // Zoom with Q/E
+  float zoomSpeed = 1.0f;
+  if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
+    simulation.params.cameraDistance = std::max(10.0f, simulation.params.cameraDistance - zoomSpeed);
+  }
+  if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
+    simulation.params.cameraDistance = std::min(200.0f, simulation.params.cameraDistance + zoomSpeed);
   }
 }
 
@@ -739,11 +732,13 @@ void renderUI() {
   // === ENVIRONMENT ===
   if (ImGui::CollapsingHeader("Environment Settings",
                               ImGuiTreeNodeFlags_DefaultOpen)) {
-    ImGui::TextDisabled("World Dimensions");
+    ImGui::TextDisabled("World Dimensions (3D Cube)");
     ImGui::PushItemWidth(120);
     ImGui::DragFloat("Arena Width", &simulation.params.worldWidth, 0.5f, 10.0f,
                      100.0f);
     ImGui::DragFloat("Arena Height", &simulation.params.worldHeight, 0.5f,
+                     10.0f, 100.0f);
+    ImGui::DragFloat("Arena Depth", &simulation.params.worldDepth, 0.5f,
                      10.0f, 100.0f);
     ImGui::PopItemWidth();
 
@@ -835,26 +830,20 @@ void renderUI() {
   }
 
   // === VISUALIZATION ===
-  if (ImGui::CollapsingHeader("Visualization")) {
+  if (ImGui::CollapsingHeader("Visualization", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("3D View", &simulation.params.view3D);
-    
+
     if (simulation.params.view3D) {
       ImGui::Indent();
       ImGui::TextDisabled("Camera Controls");
       ImGui::DragFloat("Camera Angle", &simulation.params.cameraAngle, 1.0f, 5.0f, 89.0f);
       ImGui::DragFloat("Camera Rotation", &simulation.params.cameraRotation, 2.0f, 0.0f, 360.0f);
       ImGui::DragFloat("Camera Distance", &simulation.params.cameraDistance, 1.0f, 10.0f, 200.0f);
-      
-      ImGui::Spacing();
-      ImGui::TextDisabled("Terrain Effects");
-      ImGui::DragFloat("Height Scale", &simulation.params.heightScale, 0.5f, 1.0f, 50.0f);
-      ImGui::DragFloat("Glow Intensity", &simulation.params.glowIntensity, 0.1f, 0.0f, 3.0f);
-      ImGui::DragFloat("Ambient Light", &simulation.params.ambientLight, 0.02f, 0.0f, 1.0f);
-      ImGui::Checkbox("Wireframe Mode", &simulation.params.showWireframe);
-      
+
       ImGui::Spacing();
       ImGui::TextDisabled("Particles");
-      ImGui::DragFloat("Particle Size", &simulation.params.particleSize, 0.5f, 1.0f, 20.0f);
+      ImGui::DragFloat("Particle Size", &simulation.params.particleSize, 1.0f, 1.0f, 50.0f);
+      ImGui::DragFloat("Glow Intensity", &simulation.params.glowIntensity, 0.1f, 0.0f, 3.0f);
       ImGui::Unindent();
     } else {
       ImGui::Checkbox("Render Field Overlay", &simulation.params.showFields);
@@ -862,13 +851,12 @@ void renderUI() {
                                   "Growth Field", "Energy Landscape"};
       ImGui::Combo("Field Mode", &simulation.params.fieldType, fieldModes, 5);
     }
-    
+
     ImGui::DragFloat("View Scale", &simulation.params.zoom, 0.05f, 0.1f, 5.0f);
   }
 
   ImGui::Separator();
-  ImGui::TextDisabled(
-      "Keybinds: [A]+Mouse = Spawn | MMB = Pan | Scroll = Zoom");
+  ImGui::TextDisabled("Camera: WASD = Rotate | Q/E = Zoom | Scroll = Zoom");
 
   ImGui::End();
 
@@ -930,14 +918,6 @@ int main() {
 
     // Handle input
     if (!io.WantCaptureMouse) {
-      // Add particles with 'A' key
-      if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
-        double mx, my;
-        glfwGetCursorPos(window, &mx, &my);
-        ImVec2 worldPos = screenToWorld(mx, my);
-        simulation.addParticle(worldPos.x, worldPos.y);
-      }
-
       // Pan with middle mouse
       if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) {
         panStart = ImGui::GetMousePos();

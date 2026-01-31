@@ -53,10 +53,10 @@ vec3 speciesColor(float species, float energy) {
     return hsl2rgb(vec3(hue, 0.7 + energy * 0.3, 0.3 + energy * 0.4));
 }
 
-// Inline particle read
-#define READ_PARTICLE_POS(i) vec2(particles[(i) * 12], particles[(i) * 12 + 1])
-#define READ_PARTICLE_MASS(i) particles[(i) * 12 + 4]
-#define READ_PARTICLE_SPECIES(i) particles[(i) * 12 + 5]
+// Inline particle read (14 floats per particle: x,y,z, vx,vy,vz, energy, species, age, dna[5])
+#define READ_PARTICLE_POS(i) vec2(particles[(i) * 14], particles[(i) * 14 + 1])
+#define READ_PARTICLE_MASS(i) particles[(i) * 14 + 6]
+#define READ_PARTICLE_SPECIES(i) particles[(i) * 14 + 7]
 
 // Wrapped distance squared (fast)
 // World goes from -worldWidth/2 to +worldWidth/2, so total size = worldWidth

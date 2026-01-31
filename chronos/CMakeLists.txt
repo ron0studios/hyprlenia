@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Find required packages
 find_package(OpenGL REQUIRED)
 find_package(glfw3 REQUIRED)
+find_package(OpenMP REQUIRED)
 
 # GLAD library
 add_library(glad src/glad.c)
@@ -49,6 +50,7 @@ target_link_libraries(particle_lenia
     glad
     glfw
     OpenGL::GL
+    OpenMP::OpenMP_CXX
     m
 )
 
