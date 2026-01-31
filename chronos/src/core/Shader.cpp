@@ -43,6 +43,14 @@ void Shader::setUniform(const std::string& name, float* values,
   glUniform1fv(glGetUniformLocation(m_id, name.c_str()), count, values);
 }
 
+void Shader::setUniform(const std::string& name, float x, float y, float z) const {
+  glUniform3f(glGetUniformLocation(m_id, name.c_str()), x, y, z);
+}
+
+void Shader::setUniformMat4(const std::string& name, const float* matrix) const {
+  glUniformMatrix4fv(glGetUniformLocation(m_id, name.c_str()), 1, GL_FALSE, matrix);
+}
+
 GLint Shader::getUniformLocation(const std::string& name) const {
   return glGetUniformLocation(m_id, name.c_str());
 }

@@ -24,6 +24,8 @@ class Shader {
   void setUniform(const std::string& name,
                   const std::array<float, 4>& vec) const;
   void setUniform(const std::string& name, float* values, int count) const;
+  void setUniform(const std::string& name, float x, float y, float z) const;
+  void setUniformMat4(const std::string& name, const float* matrix) const;
 
   GLint getUniformLocation(const std::string& name) const;
 

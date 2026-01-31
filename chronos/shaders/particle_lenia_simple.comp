@@ -53,7 +53,7 @@ float growthFunction(float u) {
   return 2.0 * exp(-0.5 * (diff * diff) / (u_Sigma_g * u_Sigma_g)) - 1.0;
 }
 
-// Fitness function - returns [0, 1]  
+// Fitness function - returns [0, 1]
 // 1.0 at optimal density, 0.0 at very wrong density
 float fitnessFunction(float u) {
   float diff = u - u_Mu_g;
@@ -132,7 +132,7 @@ void main() {
   float growth = 0.0;
   float fitness = 0.0;
   float neighborCount = 0.0;
-  
+
   if (totalWeight > 0.0) {
     float u = fieldSum / totalWeight;
     growth = growthFunction(u);
@@ -157,25 +157,25 @@ void main() {
     // === SIMPLE MORTALITY SYSTEM ===
     // Rule: Having neighbors = good, being alone = bad
     // This is much simpler and more robust than fitness-based
-    
+
     bool hasNeighbors = (neighborCount > 0.1);
-    
+
     if (hasNeighbors) {
       // With neighbors: gain energy based on how many (capped)
       // More neighbors = more energy, up to a point
       float neighborBonus = min(neighborCount, 3.0) / 3.0;  // 0 to 1
       float energyGain = neighborBonus * u_EnergyFromGrowth;
-      
+
       // Very small decay even when healthy
       float energyLoss = u_EnergyDecay * 0.05;
-      
+
       newEnergy = me.energy + energyGain - energyLoss;
     } else {
       // Completely isolated: decay slowly
       // With energyDecay=0.005, takes 200 steps to die
       newEnergy = me.energy - u_EnergyDecay;
     }
-    
+
     // Clamp - allow accumulation above 1.0 for reproduction
     newEnergy = clamp(newEnergy, 0.0, 2.0);
   }
