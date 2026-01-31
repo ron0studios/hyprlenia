@@ -42,15 +42,20 @@ uniform int u_FoodGridSize;
 
 const vec3 BACKGROUND = vec3(0.005, 0.02, 0.05);
 
-// Fast HSL to RGB
-vec3 hsl2rgb(vec3 c) {
-    vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
-    return c.z + c.y * (rgb - 0.5) * (1.0 - abs(2.0 * c.z - 1.0));
-}
-
-vec3 speciesColor(float species, float energy) {
-    float hue = mod(species * 0.3, 1.0);
-    return hsl2rgb(vec3(hue, 0.7 + energy * 0.3, 0.3 + energy * 0.4));
+// Channel-based coloring for multi-channel Lenia
+vec3 channelColor(float channel, float energy) {
+    // Channel 0: Blue/Cyan spectrum
+    // Channel 1: Orange/Red spectrum
+    vec3 baseColor;
+    if (channel < 0.5) {
+        // Channel 0: Cool blue
+        baseColor = vec3(0.2, 0.5, 1.0);
+    } else {
+        // Channel 1: Warm orange
+        baseColor = vec3(1.0, 0.4, 0.15);
+    }
+    // Brighten based on energy
+    return baseColor * (0.4 + energy * 0.6);
 }
 
 // Inline particle read (14 floats per particle: x,y,z, vx,vy,vz, energy, species, age, dna[5])
@@ -226,7 +231,7 @@ void main() {
         if (d2 < minDist2) {
             minDist2 = d2;
             closestEnergy = mass;
-            closestColor = speciesColor(READ_PARTICLE_SPECIES(i), mass);
+            closestColor = channelColor(READ_PARTICLE_SPECIES(i), mass);
         }
     }
     

@@ -96,6 +96,47 @@ struct SimulationParams {
   bool showWireframe = false;     // Show terrain wireframe
   float ambientLight = 0.5f;      // Ambient lighting (higher for visibility)
   float particleSize = 20.0f;     // 3D particle size
+
+  // Multi-channel parameters
+  int interactionPreset = 0;  // 0=Independent, 1=Predator-Prey, 2=Symbiosis, 3=Competition
+
+  // Per-channel kernel parameters [channel 0, channel 1]
+  float mu_k_ch[2] = {4.0f, 4.0f};
+  float sigma_k2_ch[2] = {1.0f, 1.0f};
+
+  // Per-channel growth parameters
+  float mu_g_ch[2] = {0.6f, 0.6f};
+  float sigma_g2_ch[2] = {0.0225f, 0.0225f};
+
+  // Cross-channel interaction matrix [from][to]
+  // interaction[i][j] = how much channel i's kernel affects channel j's growth
+  float interaction[4] = {1.0f, 0.0f, 0.0f, 1.0f};  // Default: independent (flattened 2x2)
+
+  // Apply interaction preset
+  void applyPreset() {
+    switch (interactionPreset) {
+      case 0:  // Independent - channels don't interact
+        interaction[0] = 1.0f; interaction[1] = 0.0f;
+        interaction[2] = 0.0f; interaction[3] = 1.0f;
+        mu_g_ch[0] = 0.6f; mu_g_ch[1] = 0.6f;
+        break;
+      case 1:  // Predator-Prey - A flees B, B chases A
+        interaction[0] = 1.0f;  interaction[1] = -0.8f;  // A: helped by A, hurt by B
+        interaction[2] = 0.5f;  interaction[3] = 1.0f;   // B: helped by A, helped by B
+        mu_g_ch[0] = 0.4f; mu_g_ch[1] = 0.8f;  // Prey sparse, predator dense
+        break;
+      case 2:  // Symbiosis - both benefit from proximity
+        interaction[0] = 0.7f; interaction[1] = 0.5f;
+        interaction[2] = 0.5f; interaction[3] = 0.7f;
+        mu_g_ch[0] = 0.6f; mu_g_ch[1] = 0.6f;
+        break;
+      case 3:  // Competition - mutual inhibition
+        interaction[0] = 1.0f;  interaction[1] = -0.6f;
+        interaction[2] = -0.6f; interaction[3] = 1.0f;
+        mu_g_ch[0] = 0.6f; mu_g_ch[1] = 0.6f;
+        break;
+    }
+  }
 };
 
 // Particle structure (must match shader) - 14 floats total
@@ -304,7 +345,7 @@ class ParticleLeniaSimulation {
                                                      params.worldHeight / 2.0f);
       std::uniform_real_distribution<float> posDistZ(-params.worldDepth / 2.0f,
                                                      params.worldDepth / 2.0f);
-      std::uniform_real_distribution<float> speciesDist(0.0f, 3.0f);
+      std::uniform_int_distribution<int> channelDist(0, 1);  // Channel 0 or 1
       std::uniform_real_distribution<float> dnaDist(-0.2f, 0.2f);
 
       #pragma omp for
@@ -321,8 +362,8 @@ class ParticleLeniaSimulation {
           data[base + 5] = 0.0f;
           // Energy
           data[base + 6] = 1.0f;
-          // Species
-          data[base + 7] = speciesDist(localRng);
+          // Channel (0 or 1) - stored in species slot
+          data[base + 7] = static_cast<float>(channelDist(localRng));
           // Age
           data[base + 8] = 0.0f;
           // DNA (5 values)
@@ -405,6 +446,13 @@ class ParticleLeniaSimulation {
     // Food system uniforms
     stepShader.setUniform("u_FoodGridSize", foodGridSize);
     stepShader.setUniform("u_FoodConsumptionRadius", params.foodConsumptionRadius);
+
+    // Multi-channel uniforms
+    stepShader.setUniform("u_MuK_Ch", params.mu_k_ch, 2);
+    stepShader.setUniform("u_SigmaK2_Ch", params.sigma_k2_ch, 2);
+    stepShader.setUniform("u_MuG_Ch", params.mu_g_ch, 2);
+    stepShader.setUniform("u_SigmaG2_Ch", params.sigma_g2_ch, 2);
+    stepShader.setUniform("u_Interaction", params.interaction, 4);
 
     // Random seed for evolution
     static int frame = 0;
@@ -594,7 +642,7 @@ class ParticleLeniaSimulation {
     for (int i = 0; i < params.maxParticles; i++) {
       int base = i * PARTICLE_FLOATS;
       if (data[base + 6] < 0.01f) {  // Dead particle (energy at index 6)
-        std::uniform_real_distribution<float> speciesDist(0.0f, 3.0f);
+        std::uniform_int_distribution<int> channelDist(0, 1);
         std::uniform_real_distribution<float> dnaDist(-0.2f, 0.2f);
 
         data[base + 0] = x;                 // x
@@ -604,7 +652,7 @@ class ParticleLeniaSimulation {
         data[base + 4] = 0.0f;              // vy
         data[base + 5] = 0.0f;              // vz
         data[base + 6] = 1.0f;              // energy
-        data[base + 7] = speciesDist(rng);  // species
+        data[base + 7] = static_cast<float>(channelDist(rng));  // channel (0 or 1)
         data[base + 8] = 0.0f;              // age
         for (int d = 0; d < 5; d++) {
           data[base + 9 + d] = dnaDist(rng);
@@ -812,10 +860,10 @@ void renderUI() {
   // === FOOD SYSTEM ===
   if (ImGui::CollapsingHeader("Food System", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("Enable Food", &simulation.params.foodEnabled);
-    
+
     if (simulation.params.foodEnabled) {
       ImGui::Checkbox("Show Food", &simulation.params.showFood);
-      
+
       ImGui::Spacing();
       ImGui::TextDisabled("Food Dynamics");
       ImGui::DragFloat("Spawn Rate", &simulation.params.foodSpawnRate,
@@ -826,6 +874,57 @@ void renderUI() {
                        0.1f, 0.1f, 5.0f);
       ImGui::DragFloat("Consumption Radius", &simulation.params.foodConsumptionRadius,
                        0.1f, 0.5f, 10.0f);
+    }
+  }
+
+  // === MULTI-CHANNEL ===
+  if (ImGui::CollapsingHeader("Multi-Channel Dynamics", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::TextColored(ImVec4(0.2f, 0.5f, 1.0f, 1.0f), "Channel A (Blue)");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.15f, 1.0f), "Channel B (Orange)");
+
+    ImGui::Spacing();
+    const char* presets[] = {"Independent", "Predator-Prey", "Symbiosis", "Competition"};
+    if (ImGui::Combo("Interaction Preset", &simulation.params.interactionPreset, presets, 4)) {
+      simulation.params.applyPreset();
+    }
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("Preset Descriptions:");
+    switch (simulation.params.interactionPreset) {
+      case 0:
+        ImGui::TextWrapped("Independent: Channels ignore each other, standard Lenia behavior.");
+        break;
+      case 1:
+        ImGui::TextWrapped("Predator-Prey: Orange chases Blue, Blue flees Orange.");
+        break;
+      case 2:
+        ImGui::TextWrapped("Symbiosis: Both channels benefit from proximity to each other.");
+        break;
+      case 3:
+        ImGui::TextWrapped("Competition: Channels inhibit each other, forming territories.");
+        break;
+    }
+
+    // Advanced: show interaction matrix
+    if (ImGui::TreeNode("Advanced Parameters")) {
+      ImGui::TextDisabled("Interaction Matrix [from -> to]");
+      ImGui::Text("A->A: %.2f  A->B: %.2f",
+                  simulation.params.interaction[0], simulation.params.interaction[1]);
+      ImGui::Text("B->A: %.2f  B->B: %.2f",
+                  simulation.params.interaction[2], simulation.params.interaction[3]);
+
+      ImGui::Spacing();
+      ImGui::TextDisabled("Channel A (Blue) Parameters");
+      ImGui::DragFloat("A: Kernel Peak##A", &simulation.params.mu_k_ch[0], 0.1f, 0.5f, 20.0f);
+      ImGui::DragFloat("A: Growth Target##A", &simulation.params.mu_g_ch[0], 0.01f, 0.0f, 2.0f);
+
+      ImGui::Spacing();
+      ImGui::TextDisabled("Channel B (Orange) Parameters");
+      ImGui::DragFloat("B: Kernel Peak##B", &simulation.params.mu_k_ch[1], 0.1f, 0.5f, 20.0f);
+      ImGui::DragFloat("B: Growth Target##B", &simulation.params.mu_g_ch[1], 0.01f, 0.0f, 2.0f);
+
+      ImGui::TreePop();
     }
   }
 

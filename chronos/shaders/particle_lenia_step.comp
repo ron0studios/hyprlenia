@@ -1,20 +1,19 @@
 #version 460 core
 
 /*
- * CHRONOS - 3D Particle Lenia with Food-Based Evolution
+ * CHRONOS - 3D Multi-Channel Particle Lenia with Food-Based Evolution
  *
- * Based on the standard Particle Lenia formulation extended to 3D:
- * - U(x) = Σ K(||x - p_i||) where K is a Gaussian shell kernel
- * - G(U) = exp(-(U - μ_G)² / σ_G²) is the growth function
- * - R(x) = (c_rep/2) Σ max(1 - ||x - p_i||, 0)² is repulsion
- * - E(x) = R(x) - G(U(x)) is the energy field
- * - Particles move down the energy gradient: dx/dt = -∇E
+ * Extended to support 2 channels with cross-channel interactions:
+ * - Each channel has its own kernel (μ_k, σ_k²) and growth (μ_g, σ_g²) params
+ * - Interaction matrix controls how channels affect each other's growth
+ * - U(x) is now split by source channel: U0, U1
+ * - Effective U for channel c: U_eff = Σ interaction[from][c] * U_from
  *
  * Particle layout (14 floats):
  *   0-2: position (x, y, z)
  *   3-5: velocity (vx, vy, vz)
  *   6: energy
- *   7: species
+ *   7: channel (0 or 1)
  *   8: age
  *   9-13: dna[5]
  */
@@ -30,19 +29,20 @@ layout(std430, binding = 1) buffer ParticlesOut { float particlesOut[]; };
 // Food texture - read/write for consumption
 layout(rgba16f, binding = 0) uniform image2D u_FoodTexture;
 
-// Shared memory for particle data (3D position + energy)
-shared vec4 tileData[128];  // xyz = position, w = energy
+// Shared memory for particle data (3D position + energy + channel)
+shared vec4 tileData[128];     // xyz = position, w = energy
+shared float tileChannel[128]; // channel (0 or 1)
 
 uniform int u_NumParticles;
 uniform int u_AliveCount;
 uniform float u_WorldWidth;
 uniform float u_WorldHeight;
 uniform float u_WorldDepth;
-uniform float u_Wk;       // Kernel weight
-uniform float u_MuK;      // Kernel peak distance
-uniform float u_SigmaK2;  // Kernel width squared
-uniform float u_MuG;      // Growth target density
-uniform float u_SigmaG2;  // Growth width squared
+uniform float u_Wk;       // Kernel weight (global)
+uniform float u_MuK;      // Kernel peak distance (legacy, unused in multi-channel)
+uniform float u_SigmaK2;  // Kernel width squared (legacy, unused in multi-channel)
+uniform float u_MuG;      // Growth target density (legacy, unused in multi-channel)
+uniform float u_SigmaG2;  // Growth width squared (legacy, unused in multi-channel)
 uniform float u_Crep;     // Repulsion strength
 uniform float u_Dt;       // Time step
 uniform float u_H;        // Finite difference step size
@@ -57,6 +57,13 @@ uniform int u_RandomSeed;
 // Food system uniforms
 uniform int u_FoodGridSize;
 uniform float u_FoodConsumptionRadius;
+
+// Multi-channel uniforms
+uniform float u_MuK_Ch[2];      // Per-channel kernel peak distance
+uniform float u_SigmaK2_Ch[2];  // Per-channel kernel width squared
+uniform float u_MuG_Ch[2];      // Per-channel growth target density
+uniform float u_SigmaG2_Ch[2];  // Per-channel growth width squared
+uniform float u_Interaction[4]; // Interaction matrix [from * 2 + to]
 
 // Convert world position to food texture coordinates (XY plane projection)
 ivec2 worldToFoodTexel(vec3 worldPos) {
@@ -129,15 +136,18 @@ float random(int idx, int offset) {
   return hash(idx * 1337 + offset * 7919 + u_RandomSeed * 104729);
 }
 
-// Kernel function K(r) - Gaussian shell at distance μ_k
-float kernelK(float r) {
-  float diff = r - u_MuK;
-  return u_Wk * exp(-diff * diff / u_SigmaK2);
+// Kernel function K(r) for a specific source channel
+float kernelK(float r, int sourceChannel) {
+  float mu = u_MuK_Ch[sourceChannel];
+  float sigma2 = u_SigmaK2_Ch[sourceChannel];
+  float diff = r - mu;
+  return u_Wk * exp(-diff * diff / sigma2);
 }
 
-// Compute U and R fields at a given 3D position from the current tile
-vec2 computeUR(vec3 queryPos, int tileEnd) {
-  float U = 0.0;
+// Compute U per source channel and R at a given 3D position from the current tile
+// Returns vec3: x = U from channel 0, y = U from channel 1, z = R (repulsion)
+vec3 computeU_PerChannel_R(vec3 queryPos, int tileEnd) {
+  vec2 U = vec2(0.0);  // U.x = from channel 0, U.y = from channel 1
   float R = 0.0;
 
   for (int j = 0; j < tileEnd; j++) {
@@ -145,26 +155,48 @@ vec2 computeUR(vec3 queryPos, int tileEnd) {
     if (otherEnergy < 0.01) continue;
 
     vec3 otherPos = tileData[j].xyz;
+    int otherChannel = int(tileChannel[j]);
+
     vec3 delta = wrappedDelta(queryPos, otherPos);
     float dist = length(delta);
 
-    // Kernel contribution to U
-    U += kernelK(dist);
+    // Kernel contribution separated by source channel
+    float k = kernelK(dist, otherChannel);
+    if (otherChannel == 0) {
+      U.x += k;
+    } else {
+      U.y += k;
+    }
 
-    // Repulsion contribution to R
+    // Repulsion contribution to R (channel-independent)
     if (dist > 0.0001 && dist < 1.0) {
       float proximity = 1.0 - dist;
       R += 0.5 * u_Crep * proximity * proximity;
     }
   }
 
-  return vec2(U, R);
+  return vec3(U.x, U.y, R);
 }
 
-// Compute energy E = R - G(U)
-float computeE(float U, float R) {
-  float diff = U - u_MuG;
-  float G = exp(-diff * diff / u_SigmaG2);
+// Compute effective U for a particle based on its channel using interaction matrix
+float computeEffectiveU(vec2 U_perChannel, int myChannel) {
+  // interaction[from * 2 + to]: how much channel 'from' affects channel 'to'
+  return u_Interaction[0 * 2 + myChannel] * U_perChannel.x +
+         u_Interaction[1 * 2 + myChannel] * U_perChannel.y;
+}
+
+// Compute growth G for a specific channel
+float computeG(float effectiveU, int myChannel) {
+  float mu = u_MuG_Ch[myChannel];
+  float sigma2 = u_SigmaG2_Ch[myChannel];
+  float diff = effectiveU - mu;
+  return exp(-diff * diff / sigma2);
+}
+
+// Compute energy E = R - G(U_eff) for a specific channel
+float computeE(vec2 U_perChannel, float R, int myChannel) {
+  float U_eff = computeEffectiveU(U_perChannel, myChannel);
+  float G = computeG(U_eff, myChannel);
   return R - G;
 }
 
@@ -181,7 +213,7 @@ void main() {
   vec3 myPos = vec3(particlesIn[base], particlesIn[base + 1], particlesIn[base + 2]);
   vec3 myVel = vec3(particlesIn[base + 3], particlesIn[base + 4], particlesIn[base + 5]);
   float myEnergy = particlesIn[base + 6];
-  float mySpecies = particlesIn[base + 7];
+  int myChannel = int(particlesIn[base + 7]);  // Channel 0 or 1
   float myAge = particlesIn[base + 8];
   float myDna[5];
   for (int d = 0; d < 5; d++) {
@@ -206,18 +238,19 @@ void main() {
   vec3 posZn = myPos - vec3(0.0, 0.0, h);
 
   // Accumulators for fields at 7 positions (center + 6 for gradient)
-  vec2 UR_c = vec2(0.0);   // center
-  vec2 UR_xp = vec2(0.0);  // x+h
-  vec2 UR_xn = vec2(0.0);  // x-h
-  vec2 UR_yp = vec2(0.0);  // y+h
-  vec2 UR_yn = vec2(0.0);  // y-h
-  vec2 UR_zp = vec2(0.0);  // z+h
-  vec2 UR_zn = vec2(0.0);  // z-h
+  // vec3: x = U from ch0, y = U from ch1, z = R
+  vec3 UR_c = vec3(0.0);   // center
+  vec3 UR_xp = vec3(0.0);  // x+h
+  vec3 UR_xn = vec3(0.0);  // x-h
+  vec3 UR_yp = vec3(0.0);  // y+h
+  vec3 UR_yn = vec3(0.0);  // y-h
+  vec3 UR_zp = vec3(0.0);  // z+h
+  vec3 UR_zn = vec3(0.0);  // z-h
 
   int numTiles = (u_NumParticles + 127) / 128;
 
   for (int t = 0; t < numTiles; t++) {
-    // Collaborative load (3D position + energy)
+    // Collaborative load (3D position + energy + channel)
     int loadIdx = t * 128 + int(localIdx);
     if (loadIdx < u_NumParticles) {
       int loadBase = loadIdx * 14;
@@ -225,33 +258,35 @@ void main() {
                                 particlesIn[loadBase + 1],  // y
                                 particlesIn[loadBase + 2],  // z
                                 particlesIn[loadBase + 6]); // energy
+      tileChannel[localIdx] = particlesIn[loadBase + 7];    // channel
     } else {
       tileData[localIdx] = vec4(0.0);
+      tileChannel[localIdx] = 0.0;
     }
 
     barrier();
 
     int tileEnd = min(128, u_NumParticles - t * 128);
 
-    // Compute U and R at all 7 positions
-    UR_c += computeUR(myPos, tileEnd);
-    UR_xp += computeUR(posXp, tileEnd);
-    UR_xn += computeUR(posXn, tileEnd);
-    UR_yp += computeUR(posYp, tileEnd);
-    UR_yn += computeUR(posYn, tileEnd);
-    UR_zp += computeUR(posZp, tileEnd);
-    UR_zn += computeUR(posZn, tileEnd);
+    // Compute U per channel and R at all 7 positions
+    UR_c += computeU_PerChannel_R(myPos, tileEnd);
+    UR_xp += computeU_PerChannel_R(posXp, tileEnd);
+    UR_xn += computeU_PerChannel_R(posXn, tileEnd);
+    UR_yp += computeU_PerChannel_R(posYp, tileEnd);
+    UR_yn += computeU_PerChannel_R(posYn, tileEnd);
+    UR_zp += computeU_PerChannel_R(posZp, tileEnd);
+    UR_zn += computeU_PerChannel_R(posZn, tileEnd);
 
     barrier();
   }
 
-  // Compute energy at each position: E = R - G(U)
-  float E_xp = computeE(UR_xp.x, UR_xp.y);
-  float E_xn = computeE(UR_xn.x, UR_xn.y);
-  float E_yp = computeE(UR_yp.x, UR_yp.y);
-  float E_yn = computeE(UR_yn.x, UR_yn.y);
-  float E_zp = computeE(UR_zp.x, UR_zp.y);
-  float E_zn = computeE(UR_zn.x, UR_zn.y);
+  // Compute energy at each position using my channel's parameters
+  float E_xp = computeE(UR_xp.xy, UR_xp.z, myChannel);
+  float E_xn = computeE(UR_xn.xy, UR_xn.z, myChannel);
+  float E_yp = computeE(UR_yp.xy, UR_yp.z, myChannel);
+  float E_yn = computeE(UR_yn.xy, UR_yn.z, myChannel);
+  float E_zp = computeE(UR_zp.xy, UR_zp.z, myChannel);
+  float E_zn = computeE(UR_zn.xy, UR_zn.z, myChannel);
 
   // Central difference gradient (3D)
   float h2 = 2.0 * h;
@@ -261,9 +296,9 @@ void main() {
     (E_zp - E_zn) / h2
   );
 
-  // Growth value at center (for evolution)
-  float diff = UR_c.x - u_MuG;
-  float growth = exp(-diff * diff / u_SigmaG2);
+  // Growth value at center (for evolution) - using my channel's params
+  float U_eff_center = computeEffectiveU(UR_c.xy, myChannel);
+  float growth = computeG(U_eff_center, myChannel);
 
   // Update position: move against gradient (3D)
   vec3 newPos = myPos - u_Dt * gradE;
@@ -333,7 +368,7 @@ void main() {
             particlesOut[childBase + 4] = myVel.y * 0.5;
             particlesOut[childBase + 5] = myVel.z * 0.5;
             particlesOut[childBase + 6] = 0.35;
-            particlesOut[childBase + 7] = mySpecies + (random(i, 5) - 0.5) * 0.1;
+            particlesOut[childBase + 7] = float(myChannel);  // Child inherits parent's channel
             particlesOut[childBase + 8] = 0.0;
 
             for (int d = 0; d < 5; d++) {
@@ -357,7 +392,7 @@ void main() {
   particlesOut[base + 4] = myVel.y;
   particlesOut[base + 5] = myVel.z;
   particlesOut[base + 6] = myEnergy;
-  particlesOut[base + 7] = mySpecies;
+  particlesOut[base + 7] = float(myChannel);  // Preserve channel
   particlesOut[base + 8] = myAge;
   for (int d = 0; d < 5; d++) {
     particlesOut[base + 9 + d] = myDna[d];
