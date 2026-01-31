@@ -75,6 +75,14 @@ struct SimulationParams {
   bool showFields = true;
   int fieldType = 3;  // 0=none, 1=U, 2=R, 3=G, 4=E
 
+  // Food system parameters
+  bool foodEnabled = true;
+  float foodSpawnRate = 0.002f;     // Probability of food spawning per cell per step
+  float foodDecayRate = 0.001f;     // How fast food decays naturally
+  float foodMaxAmount = 1.0f;       // Maximum food per cell
+  float foodConsumptionRadius = 2.0f;  // How far particles can reach to eat
+  bool showFood = true;             // Show food on display
+
   // 3D Rendering
   bool view3D = false;
   float cameraAngle = 45.0f;      // Degrees from horizontal
@@ -121,6 +129,11 @@ class ParticleLeniaSimulation {
   int terrainGridSize = 128;  // 128x128 grid for terrain
   int terrainIndexCount = 0;
 
+  // Food system resources
+  ComputeShader foodUpdateShader;
+  GLuint foodTexture = 0;
+  int foodGridSize = 128;  // 128x128 food grid
+
   std::mt19937 rng;
 
   // Stats
@@ -155,6 +168,38 @@ class ParticleLeniaSimulation {
 
     // Initialize 3D rendering
     init3D();
+
+    // Initialize food system
+    initFood();
+  }
+
+  void initFood() {
+    // Load food update shader
+    foodUpdateShader = ComputeShader("shaders/food_update.comp");
+    foodUpdateShader.init();
+
+    // Create food texture (RGBA16F: R=food amount, G=freshness)
+    glGenTextures(1, &foodTexture);
+    glBindTexture(GL_TEXTURE_2D, foodTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, foodGridSize, foodGridSize, 
+                 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+    // Initialize food texture with some random food
+    std::vector<float> foodData(foodGridSize * foodGridSize * 4, 0.0f);
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    for (int i = 0; i < foodGridSize * foodGridSize; i++) {
+      if (dist(rng) < 0.1f) {  // 10% initial food coverage
+        foodData[i * 4 + 0] = dist(rng) * 0.5f;  // Food amount
+        foodData[i * 4 + 1] = 1.0f;              // Freshness
+      }
+    }
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, foodGridSize, foodGridSize, 
+                    GL_RGBA, GL_FLOAT, foodData.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
   }
 
   void init3D() {
@@ -286,11 +331,39 @@ class ParticleLeniaSimulation {
     Buffer& readBuffer = useBufferA ? particleBufferA : particleBufferB;
     Buffer& writeBuffer = useBufferA ? particleBufferB : particleBufferA;
 
+    // === STEP 1: Update food (spawn + decay) ===
+    if (params.foodEnabled) {
+      foodUpdateShader.use();
+      
+      // Bind food texture for read/write
+      glBindImageTexture(0, foodTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA16F);
+      
+      // Set uniforms
+      static int foodFrame = 0;
+      foodUpdateShader.setUniform("u_FoodGridSize", foodGridSize);
+      foodUpdateShader.setUniform("u_FoodSpawnRate", params.foodSpawnRate);
+      foodUpdateShader.setUniform("u_FoodDecayRate", params.foodDecayRate);
+      foodUpdateShader.setUniform("u_FoodMaxAmount", params.foodMaxAmount);
+      foodUpdateShader.setUniform("u_RandomSeed", foodFrame++);
+      
+      // Dispatch (16x16 work groups)
+      int foodWorkGroupsX = (foodGridSize + 15) / 16;
+      int foodWorkGroupsY = (foodGridSize + 15) / 16;
+      foodUpdateShader.dispatch(foodWorkGroupsX, foodWorkGroupsY, 1);
+      foodUpdateShader.wait();
+    }
+
+    // === STEP 2: Update particles ===
     stepShader.use();
 
     // Bind buffers
     stepShader.bindBuffer("ParticlesIn", readBuffer, 0);
     stepShader.bindBuffer("ParticlesOut", writeBuffer, 1);
+    
+    // Bind food texture for read/write (particles consume food)
+    if (params.foodEnabled) {
+      glBindImageTexture(0, foodTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA16F);
+    }
 
     // Bind uniforms
     stepShader.setUniform("u_NumParticles", params.maxParticles);
@@ -311,6 +384,10 @@ class ParticleLeniaSimulation {
     stepShader.setUniform("u_MutationRate", params.mutationRate);
     stepShader.setUniform("u_EnergyDecay", params.energyDecay);
     stepShader.setUniform("u_EnergyFromGrowth", params.energyFromGrowth);
+    
+    // Food system uniforms
+    stepShader.setUniform("u_FoodGridSize", foodGridSize);
+    stepShader.setUniform("u_FoodConsumptionRadius", params.foodConsumptionRadius);
 
     // Random seed for evolution
     static int frame = 0;
@@ -329,6 +406,11 @@ class ParticleLeniaSimulation {
 
     displayShader.use();
     displayShader.bindBuffer("Particles", activeBuffer, 0);
+    
+    // Bind food texture for display
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, foodTexture);
+    displayShader.setUniform("u_FoodTexture", 0);
 
     displayShader.setUniform("u_NumParticles", params.maxParticles);
     displayShader.setUniform("u_WorldWidth", params.worldWidth);
@@ -346,6 +428,8 @@ class ParticleLeniaSimulation {
     displayShader.setUniform("u_SigmaG2", params.sigma_g2);
     displayShader.setUniform("u_ShowFields", params.showFields);
     displayShader.setUniform("u_FieldType", params.fieldType);
+    displayShader.setUniform("u_ShowFood", params.showFood);
+    displayShader.setUniform("u_FoodGridSize", foodGridSize);
 
     displayShader.render();
   }
@@ -727,6 +811,26 @@ void renderUI() {
                        0.0001f, 0.0f, 0.01f, "%.5f");
       ImGui::DragFloat("Vitality Gain", &simulation.params.energyFromGrowth,
                        0.001f, 0.0f, 0.1f);
+    }
+  }
+
+  // === FOOD SYSTEM ===
+  if (ImGui::CollapsingHeader("Food System", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Checkbox("Enable Food", &simulation.params.foodEnabled);
+    
+    if (simulation.params.foodEnabled) {
+      ImGui::Checkbox("Show Food", &simulation.params.showFood);
+      
+      ImGui::Spacing();
+      ImGui::TextDisabled("Food Dynamics");
+      ImGui::DragFloat("Spawn Rate", &simulation.params.foodSpawnRate,
+                       0.0001f, 0.0f, 0.01f, "%.4f");
+      ImGui::DragFloat("Decay Rate", &simulation.params.foodDecayRate,
+                       0.0001f, 0.0f, 0.01f, "%.4f");
+      ImGui::DragFloat("Max Amount", &simulation.params.foodMaxAmount,
+                       0.1f, 0.1f, 5.0f);
+      ImGui::DragFloat("Consumption Radius", &simulation.params.foodConsumptionRadius,
+                       0.1f, 0.5f, 10.0f);
     }
   }
 

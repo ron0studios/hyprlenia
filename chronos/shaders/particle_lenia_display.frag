@@ -35,6 +35,11 @@ uniform float u_SigmaG2;
 uniform bool u_ShowFields;
 uniform int u_FieldType;
 
+// Food system
+uniform sampler2D u_FoodTexture;
+uniform bool u_ShowFood;
+uniform int u_FoodGridSize;
+
 const vec3 BACKGROUND = vec3(0.005, 0.02, 0.05);
 
 // Fast HSL to RGB
@@ -88,6 +93,12 @@ void main() {
         scaledUV.x * (u_WorldWidth * 0.5) / u_Zoom + u_TranslateX,
         scaledUV.y * (u_WorldHeight * 0.5) / u_Zoom + u_TranslateY
     );
+
+    // Limit rendering to the world bounds to avoid ghost duplicates
+    if (abs(worldPos.x) > u_WorldWidth * 0.5 || abs(worldPos.y) > u_WorldHeight * 0.5) {
+        FragColor = vec4(BACKGROUND * 0.5, 1.0);  // Darker background outside world
+        return;
+    }
     
     vec3 color = BACKGROUND;
     
@@ -156,6 +167,40 @@ void main() {
         } else {
             // For non-sampled pixels, just use background with slight tint
             color = BACKGROUND * 1.1;
+        }
+    }
+    
+    // === FOOD RENDERING ===
+    // Show food as glowing green spots
+    if (u_ShowFood) {
+        // Convert world position to food texture UV
+        // World goes from -worldWidth/2 to +worldWidth/2
+        vec2 foodUV = (worldPos + vec2(u_WorldWidth, u_WorldHeight) * 0.5) / vec2(u_WorldWidth, u_WorldHeight);
+        
+        // Wrap for toroidal display
+        foodUV = fract(foodUV);
+        
+        // Sample food texture
+        vec4 foodData = texture(u_FoodTexture, foodUV);
+        float foodAmount = foodData.r;
+        float freshness = foodData.g;
+        
+        if (foodAmount > 0.01) {
+            // Food color: bright green/yellow based on freshness
+            vec3 foodColor = mix(vec3(0.3, 0.8, 0.1), vec3(0.9, 0.9, 0.2), freshness);
+            
+            // Add glow effect based on food density
+            float foodGlow = foodAmount * 0.6;
+            
+            // Sparkle effect for fresh food
+            if (freshness > 0.5) {
+                vec2 sparkleUV = foodUV * float(u_FoodGridSize);
+                float sparkle = sin(sparkleUV.x * 3.14159 * 2.0) * sin(sparkleUV.y * 3.14159 * 2.0);
+                sparkle = max(0.0, sparkle) * freshness * 0.3;
+                foodGlow += sparkle;
+            }
+            
+            color = mix(color, foodColor, foodGlow);
         }
     }
     

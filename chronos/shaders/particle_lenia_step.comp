@@ -1,7 +1,7 @@
 #version 460 core
 
 /*
- * CHRONOS - Particle Lenia with Evolution
+ * CHRONOS - Particle Lenia with Food-Based Evolution
  *
  * Based on the standard Particle Lenia formulation:
  * - U(x) = Σ K(||x - p_i||) where K is a Gaussian shell kernel
@@ -10,7 +10,11 @@
  * - E(x) = R(x) - G(U(x)) is the energy field
  * - Particles move down the energy gradient: dx/dt = -∇E
  *
- * Uses finite difference gradient (correct physics)
+ * FOOD SYSTEM:
+ * - Particles gain energy by consuming food from the environment
+ * - Particles in clusters can reproduce when energy is high
+ * - No random birth rate - only reproduction from existing particles
+ * - Particles die from starvation (low energy) or old age
  */
 
 layout(local_size_x = 128) in;
@@ -20,6 +24,9 @@ layout(std430, binding = 0) readonly buffer ParticlesIn {
 };
 
 layout(std430, binding = 1) buffer ParticlesOut { float particlesOut[]; };
+
+// Food texture - read/write for consumption
+layout(rgba16f, binding = 0) uniform image2D u_FoodTexture;
 
 // Shared memory for particle data
 shared vec4 tileData[128];  // xy = position, z = energy
@@ -37,12 +44,47 @@ uniform float u_Crep;     // Repulsion strength
 uniform float u_Dt;       // Time step
 uniform float u_H;        // Finite difference step size
 uniform bool u_EvolutionEnabled;
-uniform float u_BirthRate;
-uniform float u_DeathRate;
+uniform float u_BirthRate;        // Now used as reproduction threshold modifier
+uniform float u_DeathRate;        // Starvation death rate
 uniform float u_MutationRate;
-uniform float u_EnergyDecay;
-uniform float u_EnergyFromGrowth;
+uniform float u_EnergyDecay;      // Base energy decay per step
+uniform float u_EnergyFromGrowth; // Energy gained from food (consumption rate)
 uniform int u_RandomSeed;
+
+// Food system uniforms
+uniform int u_FoodGridSize;
+uniform float u_FoodConsumptionRadius;  // How far particles can reach for food
+
+// Convert world position to food texture coordinates
+ivec2 worldToFoodTexel(vec2 worldPos) {
+  // World goes from -width/2 to +width/2
+  // Map to 0-1, then to 0-gridSize
+  vec2 uv = (worldPos + vec2(u_WorldWidth, u_WorldHeight) * 0.5) / vec2(u_WorldWidth, u_WorldHeight);
+  uv = clamp(uv, 0.0, 0.999);
+  return ivec2(uv * float(u_FoodGridSize));
+}
+
+// Sample and consume food at a position, returns amount consumed
+float consumeFood(vec2 worldPos, float maxConsume) {
+  ivec2 texel = worldToFoodTexel(worldPos);
+  vec4 food = imageLoad(u_FoodTexture, texel);
+  float available = food.r;
+  float consumed = min(available, maxConsume);
+  
+  // Reduce food in the texture
+  if (consumed > 0.001) {
+    food.r = available - consumed;
+    imageStore(u_FoodTexture, texel, food);
+  }
+  
+  return consumed;
+}
+
+// Get food amount at position without consuming
+float sampleFood(vec2 worldPos) {
+  ivec2 texel = worldToFoodTexel(worldPos);
+  return imageLoad(u_FoodTexture, texel).r;
+}
 
 // Wrap delta for toroidal world
 // World goes from -worldWidth/2 to +worldWidth/2 (total size = worldWidth)
@@ -214,53 +256,75 @@ void main() {
   myPos = newPos;
   myAge += 1.0;
 
-  // Evolution mechanics - BALANCED VERSION
+  // Evolution mechanics - FOOD-BASED SURVIVAL
   if (u_EvolutionEnabled) {
-    // Growth ranges from 0 to 1, with 1 being optimal
-    // Give energy proportional to growth, subtract a small decay
-    // This way particles at growth > 0.3 or so gain energy
-    float energyGain = growth * u_EnergyFromGrowth;
+    // === FOOD CONSUMPTION ===
+    // Particles consume food near them to gain energy
+    float foodConsumed = consumeFood(myPos, u_EnergyFromGrowth * 0.5);
+    
+    // Cluster bonus: particles in groups are more efficient at finding food
+    // Higher neighbor density means better foraging (growth reflects local density)
+    float clusterBonus = growth * 0.3;  // 0-30% bonus based on neighbors
+    float energyGain = foodConsumed * (1.0 + clusterBonus);
+    
+    // === ENERGY DECAY ===
+    // Constant energy drain - particles must keep finding food
     float energyLoss = u_EnergyDecay;
 
-    // Age-based senescence (very gentle)
-    if (myAge > 2000.0) {
-      energyLoss += u_DeathRate * 0.1 * (myAge - 2000.0) / 2000.0;
+    // Age-based senescence (very gentle, starts at old age)
+    if (myAge > 3000.0) {
+      energyLoss += u_DeathRate * 0.05 * (myAge - 3000.0) / 3000.0;
+    }
+    
+    // Isolation penalty: particles alone lose energy faster
+    if (growth < 0.2) {
+      energyLoss += u_EnergyDecay * 0.5;  // 50% more decay when isolated
     }
 
     // Net energy change
     myEnergy = clamp(myEnergy + energyGain - energyLoss, 0.0, 1.0);
 
-    // Only die if energy fully depleted (no random death)
+    // === STARVATION DEATH ===
+    // Die if energy fully depleted
     if (myEnergy < 0.001) {
-      myEnergy = 0.0;
+      myEnergy = 0.0;  // Mark as dead
     }
 
-    // Reproduction when energy is high
-    if (myEnergy > 0.85 && random(i, 1) < u_BirthRate) {
-      for (int j = 0; j < u_NumParticles; j++) {
-        float otherE = particlesIn[j * 12 + 4];
-        if (otherE < 0.01) {
-          int childBase = j * 12;
-          float angle = random(i, 2) * 6.28318;
-          float spawnDist = 0.5 + random(i, 3) * 0.5;
-          vec2 childPos =
-              wrapPos(myPos + vec2(cos(angle), sin(angle)) * spawnDist);
+    // === REPRODUCTION ===
+    // Only way to create new particles: high-energy particles reproduce
+    // REQUIRES: sufficient energy AND recent food consumption
+    // This ensures reproduction only happens in food-rich areas
+    if (myEnergy > 0.80 && foodConsumed > 0.001) {
+      // Higher reproduction chance when very well-fed and actively eating
+      float reproChance = (myEnergy - 0.80) * 0.5 * min(foodConsumed * 10.0, 1.0);
+      
+      if (random(i, 1) < reproChance) {
+        // Find a dead particle slot to spawn into
+        for (int j = 0; j < u_NumParticles; j++) {
+          float otherE = particlesIn[j * 12 + 4];
+          if (otherE < 0.01) {
+            int childBase = j * 12;
+            float angle = random(i, 2) * 6.28318;
+            float spawnDist = 0.5 + random(i, 3) * 0.5;
+            vec2 childPos =
+                wrapPos(myPos + vec2(cos(angle), sin(angle)) * spawnDist);
 
-          particlesOut[childBase + 0] = childPos.x;
-          particlesOut[childBase + 1] = childPos.y;
-          particlesOut[childBase + 2] = 0.0;
-          particlesOut[childBase + 3] = 0.0;
-          particlesOut[childBase + 4] = 0.4;  // Child starts with less energy
-          particlesOut[childBase + 5] = mySpecies + (random(i, 4) - 0.5) * 0.1;
-          particlesOut[childBase + 6] = 0.0;
+            particlesOut[childBase + 0] = childPos.x;
+            particlesOut[childBase + 1] = childPos.y;
+            particlesOut[childBase + 2] = myVel.x * 0.5;  // Inherit some momentum
+            particlesOut[childBase + 3] = myVel.y * 0.5;
+            particlesOut[childBase + 4] = 0.35;  // Child starts with moderate energy
+            particlesOut[childBase + 5] = mySpecies + (random(i, 4) - 0.5) * 0.1;
+            particlesOut[childBase + 6] = 0.0;
 
-          for (int d = 0; d < 5; d++) {
-            float mut = (random(i, 5 + d) - 0.5) * u_MutationRate;
-            particlesOut[childBase + 7 + d] = clamp(myDna[d] + mut, -0.5, 0.5);
+            for (int d = 0; d < 5; d++) {
+              float mut = (random(i, 5 + d) - 0.5) * u_MutationRate;
+              particlesOut[childBase + 7 + d] = clamp(myDna[d] + mut, -0.5, 0.5);
+            }
+
+            myEnergy -= 0.35;  // Cost of reproduction (substantial)
+            break;
           }
-
-          myEnergy -= 0.25;  // Cost of reproduction
-          break;
         }
       }
     }
