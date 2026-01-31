@@ -1,164 +1,167 @@
 #version 460 core
-
-// PARTICLE LENIA - Based on Google Research implementation
-// https://google-research.github.io/self-organising-systems/particle-lenia/
-// 
-// Key insight: Particles move down the ENERGY gradient
-// Energy E = Repulsion R - Growth G
-// - R: pushes particles apart when too close
-// - G: attracts particles to optimal density (Lenia sweet spot)
+/*
+ * CHRONOS - Particle-Based Continuous Cellular Automata
+ * 
+ * This compute shader implements a particle-based extension of Lenia,
+ * where discrete particles navigate an energy landscape defined by:
+ * 
+ *   E(x) = Separation(x) - Cohesion(x)
+ * 
+ * Particles descend this energy gradient, naturally forming
+ * self-organizing structures when parameters are tuned correctly.
+ * 
+ * The cohesion term creates "sweet spots" of optimal local density,
+ * while the separation term prevents overcrowding.
+ */
 
 layout(local_size_x = 256) in;
 
+// === PARTICLE DATA STRUCTURE ===
 struct Particle {
-    vec2 pos;      // Position in [0, 1]
-    vec2 vel;      // Velocity (for visualization/trails)
-    float mass;    // Mass/health [0, 1] - particles can die!
-    float species; // Species ID
-    vec2 padding;
+    vec2 pos;       // World-space position
+    vec2 vel;       // Velocity vector (for trails/visualization)
+    float mass;     // Vitality/mass [0,1] - determines particle activity
+    float species;  // Species identifier for multi-species simulations
+    vec2 padding;   // Alignment padding
 };
 
-layout(std430, binding = 0) buffer ParticleBuffer {
+// Double-buffered particle storage
+layout(std430, binding = 0) readonly buffer ParticleInput {
     Particle particles[];
 };
 
-layout(std430, binding = 1) buffer ParticleBufferOut {
+layout(std430, binding = 1) writeonly buffer ParticleOutput {
     Particle particlesOut[];
 };
 
+// === UNIFORMS ===
 uniform int u_NumParticles;
 uniform float u_Time;
 uniform float u_DeltaTime;
 
-// === PARTICLE LENIA PARAMETERS ===
-// Kernel parameters (controls sensing range)
-uniform float u_Wk;        // Kernel weight (default: 0.022)
-uniform float u_MuK;       // Kernel peak distance (default: 4.0)
-uniform float u_SigmaK2;   // Kernel width squared (default: 1.0)
+// Perception kernel configuration
+uniform float u_Wk;        // Kernel magnitude
+uniform float u_MuK;       // Peak perception radius
+uniform float u_SigmaK2;   // Perception falloff
 
-// Growth parameters (Lenia-style)
-uniform float u_MuG;       // Growth center - optimal density (default: 0.6)
-uniform float u_SigmaG2;   // Growth width squared (default: 0.0225)
+// Cohesion response (Lenia-inspired growth curve)
+uniform float u_MuG;       // Optimal local density
+uniform float u_SigmaG2;   // Density tolerance
 
-// Repulsion
-uniform float u_Crep;      // Repulsion strength (default: 1.0)
+// Separation behavior
+uniform float u_Crep;      // Separation force magnitude
 
-// Time step
-uniform float u_Dt;        // Time step (default: 0.1)
+// Temporal
+uniform float u_Dt;        // Integration timestep
+uniform float u_WorldSize; // Simulation domain half-width
 
-// World scale (internal coordinates)
-uniform float u_WorldSize; // Size of simulation (default: 30.0)
+// Finite difference constants for gradient estimation
+const float EPSILON = 0.01;
+const float EPSILON_2X = 0.02;
 
-// Gradient calculation step
-const float H = 0.01;
-const float H2 = 0.02;
+// Collision threshold
+const float MIN_SEPARATION = 1e-10;
 
-// Minimum distance for repulsion
-const float R_DISTANCE = 1e-10;
-
-// === KERNEL FUNCTION ===
-// K(r) = w_k * exp(-(r - mu_k)^2 / sigma_k^2)
-float K(float r) {
-    float diff = r - u_MuK;
-    return u_Wk * exp(-diff * diff / u_SigmaK2);
+// === PERCEPTION KERNEL ===
+// Gaussian-like perception function centered at preferred distance
+// Returns how strongly a particle at distance 'r' influences perception
+float perceptionKernel(float r) {
+    float offset = r - u_MuK;
+    return u_Wk * exp(-offset * offset / u_SigmaK2);
 }
 
-// === GROWTH FUNCTION ===
-// G(u) = exp(-(u - mu_g)^2 / sigma_g^2)
-float G(float u) {
-    float diff = u - u_MuG;
-    return exp(-diff * diff / u_SigmaG2);
+// === COHESION RESPONSE ===
+// Maps local density to a cohesion value
+// Peak response at optimal density u_MuG
+float cohesionResponse(float localDensity) {
+    float offset = localDensity - u_MuG;
+    return exp(-offset * offset / u_SigmaG2);
 }
 
-// Wrap position to world bounds
-vec2 wrap(vec2 p, float size) {
+// === TOROIDAL WRAPPING ===
+// Wraps position to stay within [-size, size] bounds
+vec2 toroidalWrap(vec2 p, float size) {
     return mod(p + size, 2.0 * size) - size;
 }
 
-// Calculate U (density) and R (repulsion) at a position
-vec2 U_and_R(vec2 position, int selfIdx) {
-    float u = 0.0;
-    float r = 0.0;
+// === FIELD COMPUTATION ===
+// Computes local density (U) and separation pressure (R) at a sample point
+vec2 computeFields(vec2 samplePos, int excludeIdx) {
+    float density = 0.0;
+    float separation = 0.0;
     
     for (int i = 0; i < u_NumParticles; i++) {
-        if (particles[i].mass < 0.01) continue; // Skip dead particles
+        // Skip inactive particles
+        if (particles[i].mass < 0.01) continue;
         
-        vec2 delta = wrap(particles[i].pos - position, u_WorldSize);
-        float dist = length(delta);
+        vec2 offset = toroidalWrap(particles[i].pos - samplePos, u_WorldSize);
+        float dist = length(offset);
         
-        // Density field U
-        u += K(dist) * particles[i].mass;
+        // Accumulate density from perception kernel
+        density += perceptionKernel(dist) * particles[i].mass;
         
-        // Repulsion field R (only for nearby particles, not self)
-        if (i != selfIdx && dist >= R_DISTANCE) {
-            float rep = max(1.0 - dist, 0.0);
-            r += u_Crep * 0.5 * rep * rep;
+        // Accumulate separation pressure (soft repulsion for close neighbors)
+        if (i != excludeIdx && dist >= MIN_SEPARATION) {
+            float proximity = max(1.0 - dist, 0.0);
+            separation += u_Crep * 0.5 * proximity * proximity;
         }
     }
     
-    return vec2(u, r);
+    return vec2(density, separation);
 }
 
-// Calculate all fields at a position
-vec4 fields(vec2 position, int selfIdx) {
-    vec2 ur = U_and_R(position, selfIdx);
-    float g = G(ur.x);
-    float e = ur.y - g;  // Energy = Repulsion - Growth
-    return vec4(ur.x, ur.y, g, e);
+// === ENERGY LANDSCAPE ===
+// Combines all fields into the final energy value particles minimize
+vec4 energyLandscape(vec2 samplePos, int excludeIdx) {
+    vec2 fields = computeFields(samplePos, excludeIdx);
+    float cohesion = cohesionResponse(fields.x);
+    float energy = fields.y - cohesion;  // E = Separation - Cohesion
+    return vec4(fields.x, fields.y, cohesion, energy);
 }
 
-// Calculate gradient of energy field
-vec2 energyGradient(vec2 position, int selfIdx) {
-    float e1 = fields(position + vec2(H, 0), selfIdx).w;
-    float e2 = fields(position - vec2(H, 0), selfIdx).w;
-    float e3 = fields(position + vec2(0, H), selfIdx).w;
-    float e4 = fields(position - vec2(0, H), selfIdx).w;
+// === GRADIENT ESTIMATION ===
+// Finite difference approximation of energy gradient
+vec2 estimateEnergyGradient(vec2 pos, int excludeIdx) {
+    float ex_pos = energyLandscape(pos + vec2(EPSILON, 0), excludeIdx).w;
+    float ex_neg = energyLandscape(pos - vec2(EPSILON, 0), excludeIdx).w;
+    float ey_pos = energyLandscape(pos + vec2(0, EPSILON), excludeIdx).w;
+    float ey_neg = energyLandscape(pos - vec2(0, EPSILON), excludeIdx).w;
     
     return vec2(
-        (e1 - e2) / H2,
-        (e3 - e4) / H2
+        (ex_pos - ex_neg) / EPSILON_2X,
+        (ey_pos - ey_neg) / EPSILON_2X
     );
 }
 
+// === MAIN PARTICLE UPDATE ===
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= u_NumParticles) return;
     
     Particle p = particles[idx];
     
-    // Skip dead particles
+    // Inactive particles remain unchanged
     if (p.mass < 0.01) {
         particlesOut[idx] = p;
         return;
     }
     
-    // Position is already in world coordinates [-worldSize, worldSize]
-    vec2 worldPos = p.pos;
+    vec2 currentPos = p.pos;
     
-    // Calculate energy gradient
-    vec2 grad = energyGradient(worldPos, int(idx));
+    // Gradient descent on energy landscape
+    vec2 gradient = estimateEnergyGradient(currentPos, int(idx));
+    vec2 newPos = currentPos - u_Dt * gradient;
     
-    // Move down the gradient (toward lower energy = better position)
-    vec2 newWorldPos = worldPos - u_Dt * grad;
+    // Apply toroidal boundary conditions
+    newPos = toroidalWrap(newPos, u_WorldSize);
     
-    // Wrap to bounds
-    newWorldPos = wrap(newWorldPos, u_WorldSize);
+    // Track velocity for visualization purposes
+    vec2 velocity = (newPos - currentPos) / max(u_DeltaTime, 0.001);
     
-    // Calculate velocity for visualization
-    vec2 newVel = (newWorldPos - worldPos) / max(u_DeltaTime, 0.001);
-    
-    // Update mass based on local growth field
-    vec4 f = fields(newWorldPos, int(idx));
-    float growth = f.z;  // G field value
-    
-    // Mass changes: grow in good spots, shrink in bad spots
-    float massChange = (growth - 0.5) * u_Dt * 0.5;
-    float newMass = clamp(p.mass + massChange, 0.0, 1.0);
-    
-    // Output - position stays in world coordinates
-    particlesOut[idx].pos = newWorldPos;
-    particlesOut[idx].vel = newVel;
-    particlesOut[idx].mass = newMass;
+    // Write updated particle state
+    particlesOut[idx].pos = newPos;
+    particlesOut[idx].vel = velocity;
+    particlesOut[idx].mass = p.mass;  // Mass remains constant
     particlesOut[idx].species = p.species;
     particlesOut[idx].padding = vec2(0.0);
 }

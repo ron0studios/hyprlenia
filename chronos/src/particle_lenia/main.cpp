@@ -328,97 +328,107 @@ void renderUI() {
     ImGui::NewFrame();
     
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(350, 700), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(320, 650), ImGuiCond_FirstUseEver);
     
-    ImGui::Begin("Particle Lenia - Evolution");
+    ImGui::Begin("Chronos Control Panel");
     
-    // Controls
-    ImGui::Text("Press 'A' + hover to add particles");
-    ImGui::Text("Middle mouse to pan");
-    ImGui::Text("Scroll to zoom");
+    // === SIMULATION STATUS ===
+    ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "SIMULATION STATUS");
+    ImGui::Text("Living Entities: %d / %d", simulation.aliveCount, simulation.params.maxParticles);
+    ImGui::Text("Mean Vitality: %.2f", simulation.avgEnergy);
+    ImGui::Text("Mean Lifespan: %.0f ticks", simulation.avgAge);
+    ImGui::Text("Performance: %.1f FPS (%.2f ms/tick)", 
+        ImGui::GetIO().Framerate,
+        (1000.0f / ImGui::GetIO().Framerate) / simulation.params.stepsPerFrame);
     
     ImGui::Separator();
     
-    // Playback
-    if (ImGui::Button(paused ? "Play" : "Pause")) {
+    // === PLAYBACK CONTROLS ===
+    ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "PLAYBACK");
+    
+    float buttonWidth = 100.0f;
+    if (ImGui::Button(paused ? "Resume" : "Halt", ImVec2(buttonWidth, 0))) {
         paused = !paused;
     }
     ImGui::SameLine();
-    if (ImGui::Button("Reset")) {
+    if (ImGui::Button("Reinitialize", ImVec2(buttonWidth, 0))) {
         simulation.resetParticles();
     }
     
-    ImGui::SliderInt("Steps/Frame", &simulation.params.stepsPerFrame, 1, 50);
+    ImGui::SliderInt("Ticks per Frame", &simulation.params.stepsPerFrame, 1, 50);
     
     ImGui::Separator();
     
-    // Statistics
-    ImGui::Text("Statistics:");
-    ImGui::Text("  Alive: %d / %d", simulation.aliveCount, simulation.params.maxParticles);
-    ImGui::Text("  Avg Energy: %.3f", simulation.avgEnergy);
-    ImGui::Text("  Avg Age: %.1f", simulation.avgAge);
-    
-    ImGui::Separator();
-    
-    // World Settings
-    if (ImGui::CollapsingHeader("World", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("World Width", &simulation.params.worldWidth, 10.0f, 100.0f);
-        ImGui::SliderFloat("World Height", &simulation.params.worldHeight, 10.0f, 100.0f);
+    // === ENVIRONMENT ===
+    if (ImGui::CollapsingHeader("Environment Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextDisabled("World Dimensions");
+        ImGui::PushItemWidth(120);
+        ImGui::DragFloat("Arena Width", &simulation.params.worldWidth, 0.5f, 10.0f, 100.0f);
+        ImGui::DragFloat("Arena Height", &simulation.params.worldHeight, 0.5f, 10.0f, 100.0f);
+        ImGui::PopItemWidth();
         
         int numParticles = simulation.params.numParticles;
-        if (ImGui::SliderInt("Initial Particles", &numParticles, 10, 1000)) {
+        if (ImGui::DragInt("Spawn Count", &numParticles, 5, 10, 1000)) {
             simulation.params.numParticles = numParticles;
         }
     }
     
-    // Kernel Settings
-    if (ImGui::CollapsingHeader("Kernel (Sensing)")) {
-        ImGui::SliderFloat("w_k (weight)", &simulation.params.w_k, 0.001f, 0.1f);
-        ImGui::SliderFloat("mu_k (peak dist)", &simulation.params.mu_k, 0.5f, 20.0f);
-        ImGui::SliderFloat("sigma_k^2 (width)", &simulation.params.sigma_k2, 0.1f, 10.0f);
+    // === INTERACTION PHYSICS ===
+    if (ImGui::CollapsingHeader("Interaction Physics")) {
+        ImGui::TextDisabled("Perception Kernel");
+        ImGui::DragFloat("Sensitivity##k", &simulation.params.w_k, 0.001f, 0.001f, 0.1f, "%.4f");
+        ImGui::DragFloat("Optimal Range##k", &simulation.params.mu_k, 0.1f, 0.5f, 20.0f);
+        ImGui::DragFloat("Range Variance##k", &simulation.params.sigma_k2, 0.05f, 0.1f, 10.0f);
+        
+        ImGui::Spacing();
+        ImGui::TextDisabled("Separation Force");
+        ImGui::DragFloat("Push Intensity", &simulation.params.c_rep, 0.1f, 0.0f, 5.0f);
     }
     
-    // Growth Settings
-    if (ImGui::CollapsingHeader("Growth (Lenia)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("mu_g (optimal density)", &simulation.params.mu_g, 0.0f, 2.0f);
-        ImGui::SliderFloat("sigma_g^2 (tolerance)", &simulation.params.sigma_g2, 0.001f, 0.5f);
+    // === LENIA DYNAMICS ===
+    if (ImGui::CollapsingHeader("Lenia Dynamics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextDisabled("Growth Response Curve");
+        ImGui::DragFloat("Target Density", &simulation.params.mu_g, 0.01f, 0.0f, 2.0f);
+        ImGui::DragFloat("Density Tolerance", &simulation.params.sigma_g2, 0.001f, 0.001f, 0.5f, "%.4f");
     }
     
-    // Repulsion
-    if (ImGui::CollapsingHeader("Repulsion")) {
-        ImGui::SliderFloat("c_rep (strength)", &simulation.params.c_rep, 0.0f, 5.0f);
+    // === TEMPORAL ===
+    if (ImGui::CollapsingHeader("Temporal Settings")) {
+        ImGui::DragFloat("Integration Step", &simulation.params.dt, 0.01f, 0.01f, 0.5f);
+        ImGui::DragFloat("Gradient Epsilon", &simulation.params.h, 0.001f, 0.001f, 0.1f, "%.4f");
     }
     
-    // Time Settings
-    if (ImGui::CollapsingHeader("Time")) {
-        ImGui::SliderFloat("dt (time step)", &simulation.params.dt, 0.01f, 0.5f);
-        ImGui::SliderFloat("h (gradient step)", &simulation.params.h, 0.001f, 0.1f);
-    }
-    
-    // Evolution Settings
-    if (ImGui::CollapsingHeader("Evolution", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enable Evolution", &simulation.params.evolutionEnabled);
+    // === EVOLUTIONARY MECHANICS ===
+    if (ImGui::CollapsingHeader("Evolutionary Mechanics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Active Evolution", &simulation.params.evolutionEnabled);
         
         if (simulation.params.evolutionEnabled) {
-            ImGui::SliderFloat("Birth Rate", &simulation.params.birthRate, 0.0f, 0.01f, "%.5f");
-            ImGui::SliderFloat("Death Rate", &simulation.params.deathRate, 0.0f, 0.01f, "%.5f");
-            ImGui::SliderFloat("Mutation Rate", &simulation.params.mutationRate, 0.0f, 0.5f);
-            ImGui::SliderFloat("Energy Decay", &simulation.params.energyDecay, 0.0f, 0.01f, "%.5f");
-            ImGui::SliderFloat("Energy from Growth", &simulation.params.energyFromGrowth, 0.0f, 0.1f);
+            ImGui::Spacing();
+            ImGui::TextDisabled("Population Dynamics");
+            ImGui::DragFloat("Reproduction Chance", &simulation.params.birthRate, 0.0001f, 0.0f, 0.01f, "%.5f");
+            ImGui::DragFloat("Mortality Baseline", &simulation.params.deathRate, 0.0001f, 0.0f, 0.01f, "%.5f");
+            
+            ImGui::Spacing();
+            ImGui::TextDisabled("Genetics");
+            ImGui::DragFloat("Mutation Amplitude", &simulation.params.mutationRate, 0.01f, 0.0f, 0.5f);
+            
+            ImGui::Spacing();
+            ImGui::TextDisabled("Metabolism");
+            ImGui::DragFloat("Vitality Drain", &simulation.params.energyDecay, 0.0001f, 0.0f, 0.01f, "%.5f");
+            ImGui::DragFloat("Vitality Gain", &simulation.params.energyFromGrowth, 0.001f, 0.0f, 0.1f);
         }
     }
     
-    // Display Settings
-    if (ImGui::CollapsingHeader("Display")) {
-        ImGui::Checkbox("Show Fields", &simulation.params.showFields);
-        const char* fieldTypes[] = {"None", "U (Density)", "R (Repulsion)", "G (Growth)", "E (Energy)"};
-        ImGui::Combo("Field Type", &simulation.params.fieldType, fieldTypes, 5);
-        ImGui::SliderFloat("Zoom", &simulation.params.zoom, 0.1f, 5.0f);
+    // === VISUALIZATION ===
+    if (ImGui::CollapsingHeader("Visualization")) {
+        ImGui::Checkbox("Render Field Overlay", &simulation.params.showFields);
+        const char* fieldModes[] = {"Off", "Density Field", "Separation Field", "Growth Field", "Energy Landscape"};
+        ImGui::Combo("Field Mode", &simulation.params.fieldType, fieldModes, 5);
+        ImGui::DragFloat("View Scale", &simulation.params.zoom, 0.05f, 0.1f, 5.0f);
     }
     
     ImGui::Separator();
-    ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
-    ImGui::Text("ms/step: %.3f", (1000.0f / ImGui::GetIO().Framerate) / simulation.params.stepsPerFrame);
+    ImGui::TextDisabled("Keybinds: [A]+Mouse = Spawn | MMB = Pan | Scroll = Zoom");
     
     ImGui::End();
     
@@ -436,6 +446,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);  // Fixed window size
     
     GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Chronos - Particle Lenia Evolution", nullptr, nullptr);
     if (!window) {
