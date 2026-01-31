@@ -54,12 +54,15 @@ vec3 speciesColor(float species, float energy) {
 #define READ_PARTICLE_SPECIES(i) particles[(i) * 12 + 5]
 
 // Wrapped distance squared (fast)
+// World goes from -worldWidth/2 to +worldWidth/2, so total size = worldWidth
 float wrappedDist2(vec2 pos1, vec2 pos2) {
     vec2 d = pos2 - pos1;
-    if (d.x > u_WorldWidth) d.x -= 2.0 * u_WorldWidth;
-    else if (d.x < -u_WorldWidth) d.x += 2.0 * u_WorldWidth;
-    if (d.y > u_WorldHeight) d.y -= 2.0 * u_WorldHeight;
-    else if (d.y < -u_WorldHeight) d.y += 2.0 * u_WorldHeight;
+    float halfW = u_WorldWidth * 0.5;
+    float halfH = u_WorldHeight * 0.5;
+    if (d.x > halfW) d.x -= u_WorldWidth;
+    else if (d.x < -halfW) d.x += u_WorldWidth;
+    if (d.y > halfH) d.y -= u_WorldHeight;
+    else if (d.y < -halfH) d.y += u_WorldHeight;
     return dot(d, d);
 }
 
@@ -80,9 +83,10 @@ void main() {
         scaledUV.y *= worldAspect / windowAspect;
     }
     
+    // scaledUV is in [-1, 1], map to world coords [-worldWidth/2, +worldWidth/2]
     vec2 worldPos = vec2(
-        scaledUV.x * u_WorldWidth / u_Zoom + u_TranslateX,
-        scaledUV.y * u_WorldHeight / u_Zoom + u_TranslateY
+        scaledUV.x * (u_WorldWidth * 0.5) / u_Zoom + u_TranslateX,
+        scaledUV.y * (u_WorldHeight * 0.5) / u_Zoom + u_TranslateY
     );
     
     vec3 color = BACKGROUND;

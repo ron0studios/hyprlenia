@@ -130,7 +130,9 @@ public:
     }
     
     void resetParticles() {
-        std::uniform_real_distribution<float> posDist(-params.worldWidth * 0.4f, params.worldWidth * 0.4f);
+        // Spawn particles uniformly in the world bounds
+        std::uniform_real_distribution<float> posDistX(-params.worldWidth / 2.0f, params.worldWidth / 2.0f);
+        std::uniform_real_distribution<float> posDistY(-params.worldHeight / 2.0f, params.worldHeight / 2.0f);
         std::uniform_real_distribution<float> speciesDist(0.0f, 3.0f);
         std::uniform_real_distribution<float> dnaDist(-0.2f, 0.2f);
         
@@ -140,8 +142,8 @@ public:
         for (int i = 0; i < params.maxParticles; i++) {
             if (i < params.numParticles) {
                 // Position
-                data.push_back(posDist(rng));
-                data.push_back(posDist(rng));
+                data.push_back(posDistX(rng));
+                data.push_back(posDistY(rng));
                 // Velocity
                 data.push_back(0.0f);
                 data.push_back(0.0f);
@@ -331,8 +333,9 @@ ImVec2 screenToWorld(float screenX, float screenY) {
         uvY *= worldAspect / windowAspect;
     }
     
-    float worldX = uvX * simulation.params.worldWidth / simulation.params.zoom + simulation.params.translateX;
-    float worldY = uvY * simulation.params.worldHeight / simulation.params.zoom + simulation.params.translateY;
+    // UV is [-1, 1], multiply by half world size to get world coords
+    float worldX = uvX * (simulation.params.worldWidth * 0.5f) / simulation.params.zoom + simulation.params.translateX;
+    float worldY = uvY * (simulation.params.worldHeight * 0.5f) / simulation.params.zoom + simulation.params.translateY;
     return ImVec2(worldX, worldY);
 }
 

@@ -1,0 +1,73 @@
+#version 460 core
+
+/*
+ * PASS 3: REORDER - Sort particles by cell for cache-friendly access
+ * 
+ * Each particle claims a slot in its cell's range using atomicAdd.
+ * Particles are copied to a sorted buffer where all particles in the
+ * same cell are contiguous in memory.
+ */
+
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec2 position;
+    vec2 velocity;
+    float energy;
+    float mass;
+    float padding1;
+    float padding2;
+};
+
+layout(std430, binding = 0) buffer ParticlesIn {
+    Particle particlesIn[];
+};
+
+layout(std430, binding = 1) buffer ParticlesSorted {
+    Particle particlesSorted[];
+};
+
+layout(std430, binding = 2) buffer GridOffsets {
+    uint offsets[];  // Start index for each cell (from prefix sum)
+};
+
+layout(std430, binding = 3) buffer WriteCounters {
+    uint writeCounters[];  // Atomic counters for claiming slots within cells
+};
+
+layout(std430, binding = 4) buffer ParticleCells {
+    uint particleCells[];  // Store which cell each sorted particle belongs to
+};
+
+uniform int u_NumParticles;
+uniform vec2 u_WorldMin;
+uniform vec2 u_WorldMax;
+uniform float u_CellSize;
+uniform int u_GridWidth;
+uniform int u_GridHeight;
+
+int positionToCell(vec2 pos) {
+    vec2 normalized = (pos - u_WorldMin) / (u_WorldMax - u_WorldMin);
+    int cx = clamp(int(normalized.x * float(u_GridWidth)), 0, u_GridWidth - 1);
+    int cy = clamp(int(normalized.y * float(u_GridHeight)), 0, u_GridHeight - 1);
+    return cy * u_GridWidth + cx;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    
+    if (idx >= uint(u_NumParticles)) return;
+    
+    Particle p = particlesIn[idx];
+    int cellId = positionToCell(p.position);
+    
+    // Claim a slot in this cell's range
+    uint slot = atomicAdd(writeCounters[cellId], 1u);
+    uint destIdx = offsets[cellId] + slot;
+    
+    // Copy particle to sorted position
+    particlesSorted[destIdx] = p;
+    
+    // Store which cell this particle is in (for the physics shader)
+    particleCells[destIdx] = uint(cellId);
+}

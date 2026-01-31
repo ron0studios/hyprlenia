@@ -1,0 +1,58 @@
+#version 460 core
+
+/*
+ * PASS 1: COUNT - Count particles per grid cell
+ * 
+ * Each particle computes its cell ID and atomically increments the counter.
+ * This tells us how many particles are in each cell.
+ */
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly buffer ParticlesIn {
+    float particles[];  // 12 floats per particle: pos(2), vel(2), energy, species, age, dna(5)
+};
+
+layout(std430, binding = 1) buffer GridCounters {
+    uint counters[];  // One counter per grid cell
+};
+
+uniform int u_NumParticles;
+uniform float u_WorldWidth;
+uniform float u_WorldHeight;
+uniform float u_CellSize;
+uniform int u_GridWidth;
+uniform int u_GridHeight;
+
+// Convert world position to cell index
+int positionToCell(vec2 pos) {
+    // Shift position to [0, 2*WorldWidth] range
+    float x = pos.x + u_WorldWidth;
+    float y = pos.y + u_WorldHeight;
+    
+    // Clamp to grid bounds
+    int cellX = clamp(int(x / u_CellSize), 0, u_GridWidth - 1);
+    int cellY = clamp(int(y / u_CellSize), 0, u_GridHeight - 1);
+    
+    return cellY * u_GridWidth + cellX;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= u_NumParticles) return;
+    
+    int base = int(idx) * 12;
+    vec2 pos = vec2(particles[base], particles[base + 1]);
+    float energy = particles[base + 4];
+    
+    // Skip dead particles but still assign them to a cell (cell 0)
+    int cellId;
+    if (energy < 0.01) {
+        cellId = 0;  // Dead particles go to cell 0
+    } else {
+        cellId = positionToCell(pos);
+    }
+    
+    // Atomically increment the counter for this cell
+    atomicAdd(counters[cellId], 1u);
+}

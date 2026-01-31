@@ -47,18 +47,23 @@ uniform float u_EnergyFromGrowth;
 uniform int u_RandomSeed;
 
 // Wrap delta for toroidal world
+// World goes from -worldWidth/2 to +worldWidth/2 (total size = worldWidth)
 vec2 wrappedDelta(vec2 from, vec2 to) {
     vec2 d = to - from;
-    if (d.x > u_WorldWidth) d.x -= 2.0 * u_WorldWidth;
-    else if (d.x < -u_WorldWidth) d.x += 2.0 * u_WorldWidth;
-    if (d.y > u_WorldHeight) d.y -= 2.0 * u_WorldHeight;
-    else if (d.y < -u_WorldHeight) d.y += 2.0 * u_WorldHeight;
+    float halfW = u_WorldWidth * 0.5;
+    float halfH = u_WorldHeight * 0.5;
+    if (d.x > halfW) d.x -= u_WorldWidth;
+    else if (d.x < -halfW) d.x += u_WorldWidth;
+    if (d.y > halfH) d.y -= u_WorldHeight;
+    else if (d.y < -halfH) d.y += u_WorldHeight;
     return d;
 }
 
 vec2 wrapPos(vec2 pos) {
-    pos.x = mod(pos.x + u_WorldWidth, 2.0 * u_WorldWidth) - u_WorldWidth;
-    pos.y = mod(pos.y + u_WorldHeight, 2.0 * u_WorldHeight) - u_WorldHeight;
+    float halfW = u_WorldWidth * 0.5;
+    float halfH = u_WorldHeight * 0.5;
+    pos.x = mod(pos.x + halfW, u_WorldWidth) - halfW;
+    pos.y = mod(pos.y + halfH, u_WorldHeight) - halfH;
     return pos;
 }
 
