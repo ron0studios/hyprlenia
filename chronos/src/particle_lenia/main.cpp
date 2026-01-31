@@ -57,12 +57,12 @@ struct SimulationParams {
     float dt = 0.1f;         // Time step
     float h = 0.01f;         // Gradient calculation distance
     
-    // Evolution parameters
-    bool evolutionEnabled = true;
+    // Evolution parameters (disabled by default for stability)
+    bool evolutionEnabled = false;
     float birthRate = 0.001f;       // Chance to reproduce per step
-    float deathRate = 0.0005f;      // Base death rate
+    float deathRate = 0.0f;         // Base death rate (0 = no random death)
     float mutationRate = 0.1f;      // Mutation strength
-    float energyDecay = 0.001f;     // Energy loss per step
+    float energyDecay = 0.0f;       // Energy loss per step (0 = no decay)
     float energyFromGrowth = 0.01f; // Energy gained from good growth
     
     // View parameters
@@ -209,8 +209,8 @@ public:
         static int frame = 0;
         stepShader.setUniform("u_RandomSeed", frame++);
         
-        // Dispatch compute shader
-        int workGroups = (params.maxParticles + 255) / 256;
+        // Dispatch compute shader (128 threads per workgroup)
+        int workGroups = (params.maxParticles + 127) / 128;
         stepShader.dispatch(workGroups, 1, 1);
         stepShader.wait();
         
@@ -317,8 +317,22 @@ void processInput(GLFWwindow* window) {
 }
 
 ImVec2 screenToWorld(float screenX, float screenY) {
-    float worldX = (screenX / WINDOW_WIDTH - 0.5f) * 2.0f * simulation.params.worldWidth / simulation.params.zoom + simulation.params.translateX;
-    float worldY = ((1.0f - screenY / WINDOW_HEIGHT) - 0.5f) * 2.0f * simulation.params.worldHeight / simulation.params.zoom + simulation.params.translateY;
+    float windowAspect = static_cast<float>(WINDOW_WIDTH) / static_cast<float>(WINDOW_HEIGHT);
+    float worldAspect = simulation.params.worldWidth / simulation.params.worldHeight;
+    
+    // Normalized UV coordinates [-1, 1]
+    float uvX = (screenX / WINDOW_WIDTH - 0.5f) * 2.0f;
+    float uvY = ((1.0f - screenY / WINDOW_HEIGHT) - 0.5f) * 2.0f;
+    
+    // Apply aspect ratio correction (same as shader)
+    if (windowAspect > worldAspect) {
+        uvX *= windowAspect / worldAspect;
+    } else {
+        uvY *= worldAspect / windowAspect;
+    }
+    
+    float worldX = uvX * simulation.params.worldWidth / simulation.params.zoom + simulation.params.translateX;
+    float worldY = uvY * simulation.params.worldHeight / simulation.params.zoom + simulation.params.translateY;
     return ImVec2(worldX, worldY);
 }
 

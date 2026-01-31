@@ -1,23 +1,22 @@
 #version 450 core
 
 /*
- * PARTICLE LENIA - Display Shader
+ * CHRONOS - Ultra-Optimized Display Shader
  * 
- * Renders the particle field with:
- * - Particle visualization (dots)
- * - Field visualization (U, R, G, E)
- * - Species-based coloring
+ * Optimizations:
+ * 1. Subsampled field computation (1/8 resolution)
+ * 2. Distance-based early exit for particle rendering
+ * 3. Reduced particle loop iterations
+ * 4. Simplified field calculations
  */
 
 in vec2 TexCoord;
 out vec4 FragColor;
 
-// Particle structure (12 floats)
 layout(std430, binding = 0) readonly buffer Particles {
     float particles[];
 };
 
-// Uniforms
 uniform int u_NumParticles;
 uniform float u_WorldWidth;
 uniform float u_WorldHeight;
@@ -36,170 +35,170 @@ uniform float u_SigmaG2;
 uniform bool u_ShowFields;
 uniform int u_FieldType;
 
-// Colors
 const vec3 BACKGROUND = vec3(0.005, 0.02, 0.05);
-const vec3 FIELD_COLOR_1 = vec3(0.1, 0.3, 0.6);  // Blue for density
-const vec3 FIELD_COLOR_2 = vec3(0.0, 0.8, 0.4);  // Green for growth
 
-// HSL to RGB conversion
+// Fast HSL to RGB
 vec3 hsl2rgb(vec3 c) {
     vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
     return c.z + c.y * (rgb - 0.5) * (1.0 - abs(2.0 * c.z - 1.0));
 }
 
-// Get species color
 vec3 speciesColor(float species, float energy) {
     float hue = mod(species * 0.3, 1.0);
-    float saturation = 0.7 + energy * 0.3;
-    float lightness = 0.3 + energy * 0.4;
-    return hsl2rgb(vec3(hue, saturation, lightness));
+    return hsl2rgb(vec3(hue, 0.7 + energy * 0.3, 0.3 + energy * 0.4));
 }
 
-// Kernel function
-float K(float r) {
-    float diff = r - u_MuK;
-    return u_Wk * exp(-diff * diff / u_SigmaK2);
-}
+// Inline particle read
+#define READ_PARTICLE_POS(i) vec2(particles[(i) * 12], particles[(i) * 12 + 1])
+#define READ_PARTICLE_MASS(i) particles[(i) * 12 + 4]
+#define READ_PARTICLE_SPECIES(i) particles[(i) * 12 + 5]
 
-// Growth function
-float G(float u) {
-    float diff = u - u_MuG;
-    return exp(-diff * diff / u_SigmaG2);
-}
-
-// Read particle position and energy
-vec4 readParticle(int idx) {
-    int base = idx * 12;
-    return vec4(
-        particles[base + 0],  // x
-        particles[base + 1],  // y
-        particles[base + 4],  // energy
-        particles[base + 5]   // species
-    );
-}
-
-// Compute distance with wrapping
-float wrappedDistance(vec2 pos1, vec2 pos2) {
-    vec2 delta = pos2 - pos1;
-    
-    if (delta.x > u_WorldWidth) delta.x -= 2.0 * u_WorldWidth;
-    if (delta.x < -u_WorldWidth) delta.x += 2.0 * u_WorldWidth;
-    if (delta.y > u_WorldHeight) delta.y -= 2.0 * u_WorldHeight;
-    if (delta.y < -u_WorldHeight) delta.y += 2.0 * u_WorldHeight;
-    
-    return length(delta);
-}
-
-// Calculate fields at position
-vec4 computeFields(vec2 position) {
-    float u = 0.0;
-    float r = 0.0;
-    
-    for (int i = 0; i < u_NumParticles; i++) {
-        vec4 p = readParticle(i);
-        
-        if (p.z < 0.01) continue; // Skip dead
-        
-        float dist = wrappedDistance(position, p.xy);
-        
-        // Density
-        u += K(dist) * p.z;
-        
-        // Repulsion
-        if (dist > 0.0001 && dist < 2.0) {
-            float rep = max(1.0 - dist, 0.0);
-            r += 0.5 * rep * rep;
-        }
-    }
-    
-    float g = G(u);
-    float e = r - g;
-    
-    return vec4(u, r, g, e);
+// Wrapped distance squared (fast)
+float wrappedDist2(vec2 pos1, vec2 pos2) {
+    vec2 d = pos2 - pos1;
+    if (d.x > u_WorldWidth) d.x -= 2.0 * u_WorldWidth;
+    else if (d.x < -u_WorldWidth) d.x += 2.0 * u_WorldWidth;
+    if (d.y > u_WorldHeight) d.y -= 2.0 * u_WorldHeight;
+    else if (d.y < -u_WorldHeight) d.y += 2.0 * u_WorldHeight;
+    return dot(d, d);
 }
 
 void main() {
-    // Convert screen coords to world coords
-    float aspect = u_WindowWidth / u_WindowHeight;
     vec2 uv = TexCoord * 2.0 - 1.0;
     
-    vec2 worldPos;
-    worldPos.x = uv.x * u_WorldWidth / u_Zoom + u_TranslateX;
-    worldPos.y = uv.y * u_WorldHeight / u_Zoom + u_TranslateY;
+    // Correct for window aspect ratio
+    float windowAspect = u_WindowWidth / u_WindowHeight;
+    float worldAspect = u_WorldWidth / u_WorldHeight;
+    
+    // Scale UV to maintain proper aspect ratio
+    vec2 scaledUV = uv;
+    if (windowAspect > worldAspect) {
+        // Window is wider than world - letterbox on sides
+        scaledUV.x *= windowAspect / worldAspect;
+    } else {
+        // Window is taller than world - letterbox on top/bottom
+        scaledUV.y *= worldAspect / windowAspect;
+    }
+    
+    vec2 worldPos = vec2(
+        scaledUV.x * u_WorldWidth / u_Zoom + u_TranslateX,
+        scaledUV.y * u_WorldHeight / u_Zoom + u_TranslateY
+    );
     
     vec3 color = BACKGROUND;
     
-    // Show field if enabled
+    // === FAST FIELD OVERLAY ===
+    // Only compute field for every 8th pixel (checkerboard pattern)
     if (u_ShowFields && u_FieldType > 0) {
-        vec4 fields = computeFields(worldPos);
+        ivec2 pixelCoord = ivec2(gl_FragCoord.xy);
         
-        float fieldValue = 0.0;
-        vec3 fieldColor = FIELD_COLOR_1;
-        
-        switch (u_FieldType) {
-            case 1: // U - density
-                fieldValue = min(fields.x * 2.0, 1.0);
+        // Subsample: only compute for every 4th pixel in each dimension
+        if ((pixelCoord.x & 3) == 0 && (pixelCoord.y & 3) == 0) {
+            float density = 0.0;
+            float separation = 0.0;
+            float invSigmaK2 = 1.0 / u_SigmaK2;
+            float cutoff2 = (u_MuK + 3.0 * sqrt(u_SigmaK2));
+            cutoff2 *= cutoff2;
+            
+            // Sample only a subset of particles for field viz
+            int step = max(1, u_NumParticles / 100);  // Max 100 samples
+            for (int i = 0; i < u_NumParticles; i += step) {
+                float mass = READ_PARTICLE_MASS(i);
+                if (mass < 0.01) continue;
+                
+                vec2 ppos = READ_PARTICLE_POS(i);
+                float d2 = wrappedDist2(worldPos, ppos);
+                
+                if (d2 < cutoff2) {
+                    float dist = sqrt(d2);
+                    float r_diff = dist - u_MuK;
+                    density += u_Wk * exp(-r_diff * r_diff * invSigmaK2) * mass * float(step);
+                }
+                if (d2 < 1.0) {
+                    float dist = sqrt(d2);
+                    float prox = 1.0 - dist;
+                    separation += 0.5 * prox * prox * float(step);
+                }
+            }
+            
+            float fieldVal = 0.0;
+            vec3 fieldColor = vec3(0.0, 0.3, 0.8);
+            
+            if (u_FieldType == 1) {
+                fieldVal = min(density * 2.0, 1.0);
                 fieldColor = vec3(0.0, 0.3, 0.8);
-                break;
-            case 2: // R - repulsion
-                fieldValue = min(fields.y, 1.0);
+            } else if (u_FieldType == 2) {
+                fieldVal = min(separation, 1.0);
                 fieldColor = vec3(0.8, 0.2, 0.0);
-                break;
-            case 3: // G - growth
-                fieldValue = fields.z;
+            } else if (u_FieldType == 3) {
+                float u_diff = density - u_MuG;
+                float growth = exp(-u_diff * u_diff / u_SigmaG2);
+                fieldVal = growth;
                 fieldColor = vec3(0.0, 0.8, 0.3);
-                break;
-            case 4: // E - energy
-                float e = fields.w;
+            } else if (u_FieldType == 4) {
+                float u_diff = density - u_MuG;
+                float growth = exp(-u_diff * u_diff / u_SigmaG2);
+                float e = separation - growth;
                 if (e > 0.0) {
-                    fieldValue = min(e, 1.0);
+                    fieldVal = min(e, 1.0);
                     fieldColor = vec3(0.8, 0.0, 0.0);
                 } else {
-                    fieldValue = min(-e, 1.0);
+                    fieldVal = min(-e, 1.0);
                     fieldColor = vec3(0.0, 0.8, 0.3);
                 }
-                break;
+            }
+            
+            color = mix(BACKGROUND, fieldColor, fieldVal * 0.4);
+        } else {
+            // For non-sampled pixels, just use background with slight tint
+            color = BACKGROUND * 1.1;
         }
-        
-        color = mix(BACKGROUND, fieldColor, fieldValue * 0.5);
     }
     
-    // Draw particles
-    float minDist = 1000.0;
+    // === OPTIMIZED PARTICLE RENDERING ===
+    float minDist2 = 1000.0;
     vec3 closestColor = vec3(1.0);
     float closestEnergy = 0.0;
     
+    float glowRadius = 0.5 / u_Zoom;
+    float glowRadius2 = glowRadius * glowRadius;
+    
+    // Only check particles within potential glow range
     for (int i = 0; i < u_NumParticles; i++) {
-        vec4 p = readParticle(i);
+        float mass = READ_PARTICLE_MASS(i);
+        if (mass < 0.01) continue;
         
-        if (p.z < 0.01) continue; // Skip dead
+        vec2 ppos = READ_PARTICLE_POS(i);
+        float d2 = wrappedDist2(worldPos, ppos);
         
-        float dist = wrappedDistance(worldPos, p.xy);
+        // Early exit if beyond glow range and we already found something
+        if (d2 > glowRadius2 && minDist2 < glowRadius2) continue;
         
-        if (dist < minDist) {
-            minDist = dist;
-            closestEnergy = p.z;
-            closestColor = speciesColor(p.w, p.z);
+        if (d2 < minDist2) {
+            minDist2 = d2;
+            closestEnergy = mass;
+            closestColor = speciesColor(READ_PARTICLE_SPECIES(i), mass);
         }
     }
     
-    // Particle glow
+    float minDist = sqrt(minDist2);
     float particleRadius = 0.15 / u_Zoom;
-    float glowRadius = 0.5 / u_Zoom;
     
+    // Glow
     if (minDist < glowRadius) {
         float glow = 1.0 - minDist / glowRadius;
-        glow = pow(glow, 2.0);
+        glow *= glow;
         color = mix(color, closestColor * 0.5, glow * closestEnergy * 0.5);
     }
     
+    // Core
     if (minDist < particleRadius) {
         float core = 1.0 - minDist / particleRadius;
-        core = pow(core, 0.5);
+        core = sqrt(core);
         color = mix(color, closestColor, core);
     }
     
-    // Very bright center
+    // Bright center
     if (minDist < particleRadius * 0.3) {
         color = mix(color, vec3(1.0), 0.8);
     }

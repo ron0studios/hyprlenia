@@ -1,30 +1,19 @@
-#version 450 core
+#version 460 core
 
 /*
- * PARTICLE LENIA - Compute Shader for Evolution
+ * CHRONOS - Particle Lenia with Evolution
  * 
- * Each particle moves down the energy gradient:
- *   Energy = Repulsion - Growth
+ * Based on the standard Particle Lenia formulation:
+ * - U(x) = Σ K(||x - p_i||) where K is a Gaussian shell kernel
+ * - G(U) = exp(-(U - μ_G)² / σ_G²) is the growth function  
+ * - R(x) = (c_rep/2) Σ max(1 - ||x - p_i||, 0)² is repulsion
+ * - E(x) = R(x) - G(U(x)) is the energy field
+ * - Particles move down the energy gradient: dx/dt = -∇E
  * 
- * Evolution mechanics:
- * - Particles gain energy from being in optimal density (growth field)
- * - Particles lose energy from being too crowded or isolated
- * - High energy particles can reproduce
- * - Low energy particles die
- * - Children inherit DNA with mutations
+ * Uses finite difference gradient (correct physics)
  */
 
-layout(local_size_x = 256) in;
-
-// Particle structure (12 floats)
-struct Particle {
-    vec2 pos;           // Position
-    vec2 vel;           // Velocity
-    float energy;       // Health [0, 1]
-    float species;      // Species ID (affects color)
-    float age;          // Age in steps
-    float dna[5];       // Genetic parameters
-};
+layout(local_size_x = 128) in;
 
 layout(std430, binding = 0) readonly buffer ParticlesIn {
     float particlesIn[];
@@ -34,29 +23,21 @@ layout(std430, binding = 1) buffer ParticlesOut {
     float particlesOut[];
 };
 
-// Simulation parameters
+// Shared memory for particle data
+shared vec4 tileData[128];  // xy = position, z = energy
+
 uniform int u_NumParticles;
 uniform int u_AliveCount;
 uniform float u_WorldWidth;
 uniform float u_WorldHeight;
-
-// Kernel parameters
-uniform float u_Wk;
-uniform float u_MuK;
-uniform float u_SigmaK2;
-
-// Growth parameters
-uniform float u_MuG;
-uniform float u_SigmaG2;
-
-// Repulsion
-uniform float u_Crep;
-
-// Time
-uniform float u_Dt;
-uniform float u_H;
-
-// Evolution
+uniform float u_Wk;       // Kernel weight
+uniform float u_MuK;      // Kernel peak distance
+uniform float u_SigmaK2;  // Kernel width squared
+uniform float u_MuG;      // Growth target density
+uniform float u_SigmaG2;  // Growth width squared
+uniform float u_Crep;     // Repulsion strength
+uniform float u_Dt;       // Time step
+uniform float u_H;        // Finite difference step size
 uniform bool u_EvolutionEnabled;
 uniform float u_BirthRate;
 uniform float u_DeathRate;
@@ -65,40 +46,22 @@ uniform float u_EnergyDecay;
 uniform float u_EnergyFromGrowth;
 uniform int u_RandomSeed;
 
-// Minimum distance for repulsion
-const float R_DISTANCE = 1e-10;
-
-// Read particle from buffer
-Particle readParticle(int idx) {
-    int base = idx * 12;
-    Particle p;
-    p.pos = vec2(particlesIn[base + 0], particlesIn[base + 1]);
-    p.vel = vec2(particlesIn[base + 2], particlesIn[base + 3]);
-    p.energy = particlesIn[base + 4];
-    p.species = particlesIn[base + 5];
-    p.age = particlesIn[base + 6];
-    for (int i = 0; i < 5; i++) {
-        p.dna[i] = particlesIn[base + 7 + i];
-    }
-    return p;
+// Wrap delta for toroidal world
+vec2 wrappedDelta(vec2 from, vec2 to) {
+    vec2 d = to - from;
+    if (d.x > u_WorldWidth) d.x -= 2.0 * u_WorldWidth;
+    else if (d.x < -u_WorldWidth) d.x += 2.0 * u_WorldWidth;
+    if (d.y > u_WorldHeight) d.y -= 2.0 * u_WorldHeight;
+    else if (d.y < -u_WorldHeight) d.y += 2.0 * u_WorldHeight;
+    return d;
 }
 
-// Write particle to buffer
-void writeParticle(int idx, Particle p) {
-    int base = idx * 12;
-    particlesOut[base + 0] = p.pos.x;
-    particlesOut[base + 1] = p.pos.y;
-    particlesOut[base + 2] = p.vel.x;
-    particlesOut[base + 3] = p.vel.y;
-    particlesOut[base + 4] = p.energy;
-    particlesOut[base + 5] = p.species;
-    particlesOut[base + 6] = p.age;
-    for (int i = 0; i < 5; i++) {
-        particlesOut[base + 7 + i] = p.dna[i];
-    }
+vec2 wrapPos(vec2 pos) {
+    pos.x = mod(pos.x + u_WorldWidth, 2.0 * u_WorldWidth) - u_WorldWidth;
+    pos.y = mod(pos.y + u_WorldHeight, 2.0 * u_WorldHeight) - u_WorldHeight;
+    return pos;
 }
 
-// Simple hash-based random number generator
 float hash(int seed) {
     int x = seed;
     x = ((x >> 16) ^ x) * 0x45d9f3b;
@@ -111,199 +74,204 @@ float random(int idx, int offset) {
     return hash(idx * 1337 + offset * 7919 + u_RandomSeed * 104729);
 }
 
-// Get effective parameters (base + DNA)
-float getEffectiveMuK(Particle p) {
-    return u_MuK * (1.0 + p.dna[0] * 0.5);
+// Kernel function K(r) - Gaussian shell at distance μ_k
+float kernelK(float r) {
+    float diff = r - u_MuK;
+    return u_Wk * exp(-diff * diff / u_SigmaK2);
 }
 
-float getEffectiveSigmaK2(Particle p) {
-    return u_SigmaK2 * (1.0 + p.dna[1] * 0.5);
-}
-
-float getEffectiveMuG(Particle p) {
-    return u_MuG * (1.0 + p.dna[2] * 0.5);
-}
-
-float getEffectiveSigmaG2(Particle p) {
-    return u_SigmaG2 * (1.0 + p.dna[3] * 0.5);
-}
-
-float getEffectiveCrep(Particle p) {
-    return u_Crep * (1.0 + p.dna[4] * 0.5);
-}
-
-// Kernel function
-float K(float r, float mu_k, float sigma_k2) {
-    float diff = r - mu_k;
-    return u_Wk * exp(-diff * diff / sigma_k2);
-}
-
-// Growth function  
-float G(float u, float mu_g, float sigma_g2) {
-    float diff = u - mu_g;
-    return exp(-diff * diff / sigma_g2);
-}
-
-// Wrap position to world bounds
-vec2 wrapPos(vec2 pos) {
-    float w = u_WorldWidth;
-    float h = u_WorldHeight;
+// Compute U and R fields at a given position from the current tile
+vec2 computeUR(vec2 queryPos, int tileEnd) {
+    float U = 0.0;
+    float R = 0.0;
     
-    // Wrap to [-width, width] and [-height, height]
-    pos.x = mod(pos.x + w, 2.0 * w) - w;
-    pos.y = mod(pos.y + h, 2.0 * h) - h;
-    
-    return pos;
-}
-
-// Get wrapped distance vector
-vec2 wrappedDelta(vec2 from, vec2 to) {
-    vec2 delta = to - from;
-    
-    float w = u_WorldWidth;
-    float h = u_WorldHeight;
-    
-    // Wrap delta to get shortest distance
-    if (delta.x > w) delta.x -= 2.0 * w;
-    if (delta.x < -w) delta.x += 2.0 * w;
-    if (delta.y > h) delta.y -= 2.0 * h;
-    if (delta.y < -h) delta.y += 2.0 * h;
-    
-    return delta;
-}
-
-// Calculate U (density field) and R (repulsion field) at a position
-vec4 computeFields(vec2 position, int selfIdx, Particle self) {
-    float u = 0.0;
-    float r = 0.0;
-    
-    float my_mu_k = getEffectiveMuK(self);
-    float my_sigma_k2 = getEffectiveSigmaK2(self);
-    float my_c_rep = getEffectiveCrep(self);
-    
-    for (int i = 0; i < u_NumParticles; i++) {
-        Particle other = readParticle(i);
+    for (int j = 0; j < tileEnd; j++) {
+        float otherEnergy = tileData[j].z;
+        if (otherEnergy < 0.01) continue;
         
-        // Skip dead particles
-        if (other.energy < 0.01) continue;
-        
-        vec2 delta = wrappedDelta(position, other.pos);
+        vec2 otherPos = tileData[j].xy;
+        vec2 delta = wrappedDelta(queryPos, otherPos);
         float dist = length(delta);
         
-        // Density field U
-        u += K(dist, my_mu_k, my_sigma_k2) * other.energy;
+        // Kernel contribution to U
+        U += kernelK(dist);
         
-        // Repulsion field R (not from self)
-        if (i != selfIdx && dist >= R_DISTANCE && dist < 2.0) {
-            float rep = max(1.0 - dist, 0.0);
-            r += my_c_rep * 0.5 * rep * rep;
+        // Repulsion contribution to R
+        if (dist > 0.0001 && dist < 1.0) {
+            float proximity = 1.0 - dist;
+            R += 0.5 * u_Crep * proximity * proximity;
         }
     }
     
-    // Growth field G
-    float my_mu_g = getEffectiveMuG(self);
-    float my_sigma_g2 = getEffectiveSigmaG2(self);
-    float g = G(u, my_mu_g, my_sigma_g2);
-    
-    // Energy field E = R - G
-    float e = r - g;
-    
-    return vec4(u, r, g, e);
+    return vec2(U, R);
 }
 
-// Calculate energy gradient
-vec2 energyGradient(vec2 position, int selfIdx, Particle self) {
-    float h = u_H;
-    float h2 = 2.0 * h;
-    
-    float e1 = computeFields(position + vec2(h, 0), selfIdx, self).w;
-    float e2 = computeFields(position - vec2(h, 0), selfIdx, self).w;
-    float e3 = computeFields(position + vec2(0, h), selfIdx, self).w;
-    float e4 = computeFields(position - vec2(0, h), selfIdx, self).w;
-    
-    return vec2((e1 - e2) / h2, (e3 - e4) / h2);
+// Compute energy E = R - G(U)
+float computeE(float U, float R) {
+    float diff = U - u_MuG;
+    float G = exp(-diff * diff / u_SigmaG2);
+    return R - G;
 }
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
+    uint localIdx = gl_LocalInvocationID.x;
+    
     if (idx >= u_NumParticles) return;
     
     int i = int(idx);
-    Particle p = readParticle(i);
+    int base = i * 12;
     
-    // Dead particles stay dead (for now)
-    if (p.energy < 0.01) {
-        writeParticle(i, p);
+    // Read my particle data
+    vec2 myPos = vec2(particlesIn[base], particlesIn[base + 1]);
+    vec2 myVel = vec2(particlesIn[base + 2], particlesIn[base + 3]);
+    float myEnergy = particlesIn[base + 4];
+    float mySpecies = particlesIn[base + 5];
+    float myAge = particlesIn[base + 6];
+    float myDna[5];
+    for (int d = 0; d < 5; d++) {
+        myDna[d] = particlesIn[base + 7 + d];
+    }
+    
+    // Dead particles stay dead
+    if (myEnergy < 0.01) {
+        for (int j = 0; j < 12; j++) {
+            particlesOut[base + j] = particlesIn[base + j];
+        }
         return;
     }
     
-    // Calculate fields at current position
-    vec4 fields = computeFields(p.pos, i, p);
-    float growth = fields.z;
+    // Finite difference positions
+    float h = u_H;
+    vec2 posXp = myPos + vec2(h, 0.0);
+    vec2 posXn = myPos - vec2(h, 0.0);
+    vec2 posYp = myPos + vec2(0.0, h);
+    vec2 posYn = myPos - vec2(0.0, h);
     
-    // Calculate gradient and move
-    vec2 grad = energyGradient(p.pos, i, p);
-    vec2 newPos = p.pos - u_Dt * grad;
+    // Accumulators for fields at 5 positions (center + 4 for gradient)
+    vec2 UR_c = vec2(0.0);  // center
+    vec2 UR_xp = vec2(0.0); // x+h
+    vec2 UR_xn = vec2(0.0); // x-h
+    vec2 UR_yp = vec2(0.0); // y+h
+    vec2 UR_yn = vec2(0.0); // y-h
+    
+    int numTiles = (u_NumParticles + 127) / 128;
+    
+    for (int t = 0; t < numTiles; t++) {
+        // Collaborative load
+        int loadIdx = t * 128 + int(localIdx);
+        if (loadIdx < u_NumParticles) {
+            int loadBase = loadIdx * 12;
+            tileData[localIdx] = vec4(
+                particlesIn[loadBase],      // x
+                particlesIn[loadBase + 1],  // y
+                particlesIn[loadBase + 4],  // energy
+                0.0
+            );
+        } else {
+            tileData[localIdx] = vec4(0.0);
+        }
+        
+        barrier();
+        
+        int tileEnd = min(128, u_NumParticles - t * 128);
+        
+        // Compute U and R at all 5 positions
+        UR_c += computeUR(myPos, tileEnd);
+        UR_xp += computeUR(posXp, tileEnd);
+        UR_xn += computeUR(posXn, tileEnd);
+        UR_yp += computeUR(posYp, tileEnd);
+        UR_yn += computeUR(posYn, tileEnd);
+        
+        barrier();
+    }
+    
+    // Compute energy at each position: E = R - G(U)
+    float E_xp = computeE(UR_xp.x, UR_xp.y);
+    float E_xn = computeE(UR_xn.x, UR_xn.y);
+    float E_yp = computeE(UR_yp.x, UR_yp.y);
+    float E_yn = computeE(UR_yn.x, UR_yn.y);
+    
+    // Central difference gradient
+    float h2 = 2.0 * h;
+    vec2 gradE = vec2(
+        (E_xp - E_xn) / h2,
+        (E_yp - E_yn) / h2
+    );
+    
+    // Growth value at center (for evolution)
+    float diff = UR_c.x - u_MuG;
+    float growth = exp(-diff * diff / u_SigmaG2);
+    
+    // Update position: move against gradient
+    vec2 newPos = myPos - u_Dt * gradE;
     newPos = wrapPos(newPos);
     
-    // Update velocity for visualization
-    p.vel = (newPos - p.pos) / max(u_Dt, 0.001);
-    p.pos = newPos;
+    // Update velocity
+    myVel = (newPos - myPos) / max(u_Dt, 0.001);
+    myPos = newPos;
+    myAge += 1.0;
     
-    // Age the particle
-    p.age += 1.0;
-    
-    // Evolution mechanics
+    // Evolution mechanics - BALANCED VERSION
     if (u_EvolutionEnabled) {
-        // Energy from growth field (being in optimal density)
-        float energyGain = (growth - 0.5) * u_EnergyFromGrowth;
-        
-        // Base energy decay (metabolism)
+        // Growth ranges from 0 to 1, with 1 being optimal
+        // Give energy proportional to growth, subtract a small decay
+        // This way particles at growth > 0.3 or so gain energy
+        float energyGain = growth * u_EnergyFromGrowth;
         float energyLoss = u_EnergyDecay;
         
-        // Age-based death (old particles get weaker)
-        if (p.age > 1000.0) {
-            energyLoss += u_DeathRate * (p.age - 1000.0) / 1000.0;
+        // Age-based senescence (very gentle)
+        if (myAge > 2000.0) {
+            energyLoss += u_DeathRate * 0.1 * (myAge - 2000.0) / 2000.0;
         }
         
-        p.energy = clamp(p.energy + energyGain - energyLoss, 0.0, 1.0);
+        // Net energy change
+        myEnergy = clamp(myEnergy + energyGain - energyLoss, 0.0, 1.0);
         
-        // Death
-        if (p.energy < 0.01 || random(i, 0) < u_DeathRate) {
-            p.energy = 0.0;
+        // Only die if energy fully depleted (no random death)
+        if (myEnergy < 0.001) {
+            myEnergy = 0.0;
         }
         
-        // Reproduction (if high energy)
-        if (p.energy > 0.8 && random(i, 1) < u_BirthRate) {
-            // Find a dead slot for the child
+        // Reproduction when energy is high
+        if (myEnergy > 0.85 && random(i, 1) < u_BirthRate) {
             for (int j = 0; j < u_NumParticles; j++) {
-                Particle child = readParticle(j);
-                if (child.energy < 0.01) {
-                    // Create child near parent
+                float otherE = particlesIn[j * 12 + 4];
+                if (otherE < 0.01) {
+                    int childBase = j * 12;
                     float angle = random(i, 2) * 6.28318;
-                    float dist = 0.5 + random(i, 3) * 0.5;
+                    float spawnDist = 0.5 + random(i, 3) * 0.5;
+                    vec2 childPos = wrapPos(myPos + vec2(cos(angle), sin(angle)) * spawnDist);
                     
-                    child.pos = wrapPos(p.pos + vec2(cos(angle), sin(angle)) * dist);
-                    child.vel = vec2(0.0);
-                    child.energy = 0.5; // Start with half energy
-                    child.species = p.species + (random(i, 4) - 0.5) * 0.2; // Slight species drift
-                    child.age = 0.0;
+                    particlesOut[childBase + 0] = childPos.x;
+                    particlesOut[childBase + 1] = childPos.y;
+                    particlesOut[childBase + 2] = 0.0;
+                    particlesOut[childBase + 3] = 0.0;
+                    particlesOut[childBase + 4] = 0.4;  // Child starts with less energy
+                    particlesOut[childBase + 5] = mySpecies + (random(i, 4) - 0.5) * 0.1;
+                    particlesOut[childBase + 6] = 0.0;
                     
-                    // Inherit DNA with mutations
                     for (int d = 0; d < 5; d++) {
-                        float mutation = (random(i, 5 + d) - 0.5) * u_MutationRate;
-                        child.dna[d] = clamp(p.dna[d] + mutation, -0.5, 0.5);
+                        float mut = (random(i, 5 + d) - 0.5) * u_MutationRate;
+                        particlesOut[childBase + 7 + d] = clamp(myDna[d] + mut, -0.5, 0.5);
                     }
                     
-                    writeParticle(j, child);
-                    
-                    // Parent loses energy from reproduction
-                    p.energy -= 0.3;
+                    myEnergy -= 0.25;  // Cost of reproduction
                     break;
                 }
             }
         }
     }
     
-    writeParticle(i, p);
+    // Write output
+    particlesOut[base + 0] = myPos.x;
+    particlesOut[base + 1] = myPos.y;
+    particlesOut[base + 2] = myVel.x;
+    particlesOut[base + 3] = myVel.y;
+    particlesOut[base + 4] = myEnergy;
+    particlesOut[base + 5] = mySpecies;
+    particlesOut[base + 6] = myAge;
+    for (int d = 0; d < 5; d++) {
+        particlesOut[base + 7 + d] = myDna[d];
+    }
 }
