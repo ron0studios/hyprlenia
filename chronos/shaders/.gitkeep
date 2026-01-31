@@ -1,4 +1,0 @@
-# Shaders directory
-
-External shader files can be placed here for more complex effects.
-The core shaders are currently embedded in the C++ source code.

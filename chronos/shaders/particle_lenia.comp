@@ -1,0 +1,164 @@
+#version 460 core
+
+// PARTICLE LENIA - Based on Google Research implementation
+// https://google-research.github.io/self-organising-systems/particle-lenia/
+// 
+// Key insight: Particles move down the ENERGY gradient
+// Energy E = Repulsion R - Growth G
+// - R: pushes particles apart when too close
+// - G: attracts particles to optimal density (Lenia sweet spot)
+
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec2 pos;      // Position in [0, 1]
+    vec2 vel;      // Velocity (for visualization/trails)
+    float mass;    // Mass/health [0, 1] - particles can die!
+    float species; // Species ID
+    vec2 padding;
+};
+
+layout(std430, binding = 0) buffer ParticleBuffer {
+    Particle particles[];
+};
+
+layout(std430, binding = 1) buffer ParticleBufferOut {
+    Particle particlesOut[];
+};
+
+uniform int u_NumParticles;
+uniform float u_Time;
+uniform float u_DeltaTime;
+
+// === PARTICLE LENIA PARAMETERS ===
+// Kernel parameters (controls sensing range)
+uniform float u_Wk;        // Kernel weight (default: 0.022)
+uniform float u_MuK;       // Kernel peak distance (default: 4.0)
+uniform float u_SigmaK2;   // Kernel width squared (default: 1.0)
+
+// Growth parameters (Lenia-style)
+uniform float u_MuG;       // Growth center - optimal density (default: 0.6)
+uniform float u_SigmaG2;   // Growth width squared (default: 0.0225)
+
+// Repulsion
+uniform float u_Crep;      // Repulsion strength (default: 1.0)
+
+// Time step
+uniform float u_Dt;        // Time step (default: 0.1)
+
+// World scale (internal coordinates)
+uniform float u_WorldSize; // Size of simulation (default: 30.0)
+
+// Gradient calculation step
+const float H = 0.01;
+const float H2 = 0.02;
+
+// Minimum distance for repulsion
+const float R_DISTANCE = 1e-10;
+
+// === KERNEL FUNCTION ===
+// K(r) = w_k * exp(-(r - mu_k)^2 / sigma_k^2)
+float K(float r) {
+    float diff = r - u_MuK;
+    return u_Wk * exp(-diff * diff / u_SigmaK2);
+}
+
+// === GROWTH FUNCTION ===
+// G(u) = exp(-(u - mu_g)^2 / sigma_g^2)
+float G(float u) {
+    float diff = u - u_MuG;
+    return exp(-diff * diff / u_SigmaG2);
+}
+
+// Wrap position to world bounds
+vec2 wrap(vec2 p, float size) {
+    return mod(p + size, 2.0 * size) - size;
+}
+
+// Calculate U (density) and R (repulsion) at a position
+vec2 U_and_R(vec2 position, int selfIdx) {
+    float u = 0.0;
+    float r = 0.0;
+    
+    for (int i = 0; i < u_NumParticles; i++) {
+        if (particles[i].mass < 0.01) continue; // Skip dead particles
+        
+        vec2 delta = wrap(particles[i].pos - position, u_WorldSize);
+        float dist = length(delta);
+        
+        // Density field U
+        u += K(dist) * particles[i].mass;
+        
+        // Repulsion field R (only for nearby particles, not self)
+        if (i != selfIdx && dist >= R_DISTANCE) {
+            float rep = max(1.0 - dist, 0.0);
+            r += u_Crep * 0.5 * rep * rep;
+        }
+    }
+    
+    return vec2(u, r);
+}
+
+// Calculate all fields at a position
+vec4 fields(vec2 position, int selfIdx) {
+    vec2 ur = U_and_R(position, selfIdx);
+    float g = G(ur.x);
+    float e = ur.y - g;  // Energy = Repulsion - Growth
+    return vec4(ur.x, ur.y, g, e);
+}
+
+// Calculate gradient of energy field
+vec2 energyGradient(vec2 position, int selfIdx) {
+    float e1 = fields(position + vec2(H, 0), selfIdx).w;
+    float e2 = fields(position - vec2(H, 0), selfIdx).w;
+    float e3 = fields(position + vec2(0, H), selfIdx).w;
+    float e4 = fields(position - vec2(0, H), selfIdx).w;
+    
+    return vec2(
+        (e1 - e2) / H2,
+        (e3 - e4) / H2
+    );
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= u_NumParticles) return;
+    
+    Particle p = particles[idx];
+    
+    // Skip dead particles
+    if (p.mass < 0.01) {
+        particlesOut[idx] = p;
+        return;
+    }
+    
+    // Position is already in world coordinates [-worldSize, worldSize]
+    vec2 worldPos = p.pos;
+    
+    // Calculate energy gradient
+    vec2 grad = energyGradient(worldPos, int(idx));
+    
+    // Move down the gradient (toward lower energy = better position)
+    vec2 newWorldPos = worldPos - u_Dt * grad;
+    
+    // Wrap to bounds
+    newWorldPos = wrap(newWorldPos, u_WorldSize);
+    
+    // Calculate velocity for visualization
+    vec2 newVel = (newWorldPos - worldPos) / max(u_DeltaTime, 0.001);
+    
+    // Update mass based on local growth field
+    vec4 f = fields(newWorldPos, int(idx));
+    float growth = f.z;  // G field value
+    
+    // Mass changes: grow in good spots, shrink in bad spots
+    float massChange = (growth - 0.5) * u_Dt * 0.5;
+    float newMass = clamp(p.mass + massChange, 0.0, 1.0);
+    
+    // Output - position stays in world coordinates
+    particlesOut[idx].pos = newWorldPos;
+    particlesOut[idx].vel = newVel;
+    particlesOut[idx].mass = newMass;
+    particlesOut[idx].species = p.species;
+    particlesOut[idx].padding = vec2(0.0);
+}

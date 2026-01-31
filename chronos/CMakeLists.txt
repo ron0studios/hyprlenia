@@ -1,72 +1,62 @@
-cmake_minimum_required(VERSION 3.25)
-project(chronos VERSION 0.1.0 LANGUAGES C CXX)
+cmake_minimum_required(VERSION 3.16)
+project(chronos_particle_lenia)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Find packages
+# Find required packages
 find_package(OpenGL REQUIRED)
 find_package(glfw3 REQUIRED)
-find_package(glm REQUIRED)
 
-# Fetch GLAD (OpenGL 4.3 for compute shaders)
-include(FetchContent)
-FetchContent_Declare(
-    glad
-    GIT_REPOSITORY https://github.com/Dav1dde/glad.git
-    GIT_TAG glad2
-    SOURCE_SUBDIR cmake
+# GLAD library
+add_library(glad src/glad.c)
+target_include_directories(glad PUBLIC ${PROJECT_SOURCE_DIR}/include)
+
+# Include directories
+include_directories(
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
 )
-FetchContent_MakeAvailable(glad)
-glad_add_library(glad_gl_core_43 REPRODUCIBLE API gl:core=4.3)
 
-# Fetch ImGui
-FetchContent_Declare(
+# ImGui library
+add_library(imgui
+    include/imgui/imgui.cpp
+    include/imgui/imgui_draw.cpp
+    include/imgui/imgui_tables.cpp
+    include/imgui/imgui_widgets.cpp
+    include/imgui/imgui_impl_glfw.cpp
+    include/imgui/imgui_impl_opengl3.cpp
+)
+target_include_directories(imgui PUBLIC ${PROJECT_SOURCE_DIR}/include)
+
+# Core library with OpenGL abstractions
+add_library(chronos_core
+    src/core/Buffer.cpp
+    src/core/Shader.cpp
+    src/core/ComputeShader.cpp
+    src/core/RenderShader.cpp
+)
+target_include_directories(chronos_core PUBLIC ${PROJECT_SOURCE_DIR}/src)
+
+# Main executable - Particle Lenia with Evolution
+add_executable(particle_lenia
+    src/particle_lenia/main.cpp
+)
+target_link_libraries(particle_lenia
+    chronos_core
     imgui
-    GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG v1.90.1
-)
-FetchContent_MakeAvailable(imgui)
-
-# ImGui source files
-set(IMGUI_SOURCES
-    ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui_demo.cpp
-    ${imgui_SOURCE_DIR}/imgui_draw.cpp
-    ${imgui_SOURCE_DIR}/imgui_tables.cpp
-    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
-)
-
-# Main executable - 2D Flow Lenia
-add_executable(chronos
-    src/main.cpp
-    src/ChronosApp2D.cpp
-    src/ChronosApp2D.h
-    src/FlowLenia2D.cpp
-    src/FlowLenia2D.h
-    src/BloomEffect.cpp
-    src/BloomEffect.h
-    ${IMGUI_SOURCES}
-)
-
-target_include_directories(chronos PRIVATE
-    ${imgui_SOURCE_DIR}
-    ${imgui_SOURCE_DIR}/backends
-    src
-)
-
-target_link_libraries(chronos PRIVATE
-    OpenGL::GL
+    glad
     glfw
-    glad_gl_core_43
-    glm::glm
+    OpenGL::GL
+    m
 )
 
 # Copy shaders to build directory
-add_custom_command(TARGET chronos POST_BUILD
+add_custom_target(copy_shaders ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-    "${CMAKE_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:chronos>/shaders"
+        ${CMAKE_SOURCE_DIR}/shaders
+        ${CMAKE_BINARY_DIR}/shaders
+    COMMENT "Copying shaders to build directory"
 )
+add_dependencies(particle_lenia copy_shaders)
