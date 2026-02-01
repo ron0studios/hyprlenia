@@ -1266,6 +1266,70 @@ ImVec2 screenToWorld(float screenX, float screenY) {
   return ImVec2(worldX, worldY);
 }
 
+// Draw the Chronos icon (3 connected circles representing particle interaction)
+void drawChronosIcon(ImVec2 pos, float size) {
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+
+  // Scale factor (original SVG is 100x100)
+  float s = size / 100.0f;
+
+  // Circle colors from SVG
+  ImU32 blue   = IM_COL32(52, 152, 219, 255);   // #3498db
+  ImU32 orange = IM_COL32(230, 126, 34, 255);   // #e67e22
+  ImU32 green  = IM_COL32(46, 204, 113, 255);   // #2ecc71
+  ImU32 gray   = IM_COL32(85, 85, 85, 255);     // #555
+
+  // Circle positions (from SVG)
+  ImVec2 c1(pos.x + 30*s, pos.y + 30*s);  // Blue - top left
+  ImVec2 c2(pos.x + 70*s, pos.y + 30*s);  // Orange - top right
+  ImVec2 c3(pos.x + 50*s, pos.y + 70*s);  // Green - bottom
+  float r = 12*s;  // Circle radius
+
+  // Draw circles
+  draw->AddCircleFilled(c1, r, blue, 24);
+  draw->AddCircleFilled(c2, r, orange, 24);
+  draw->AddCircleFilled(c3, r, green, 24);
+
+  // Draw curved arrows (simplified as lines with arrowheads)
+  float lineWidth = 2.5f * s;
+
+  // Arrow 1: Blue -> Orange (top)
+  ImVec2 a1_start(pos.x + 42*s, pos.y + 25*s);
+  ImVec2 a1_end(pos.x + 58*s, pos.y + 25*s);
+  draw->AddLine(a1_start, a1_end, gray, lineWidth);
+  // Arrowhead
+  draw->AddTriangleFilled(
+    ImVec2(a1_end.x + 4*s, a1_end.y),
+    ImVec2(a1_end.x - 3*s, a1_end.y - 4*s),
+    ImVec2(a1_end.x - 3*s, a1_end.y + 4*s),
+    gray
+  );
+
+  // Arrow 2: Orange -> Green (right side)
+  ImVec2 a2_start(pos.x + 72*s, pos.y + 44*s);
+  ImVec2 a2_end(pos.x + 62*s, pos.y + 60*s);
+  draw->AddLine(a2_start, a2_end, gray, lineWidth);
+  // Arrowhead
+  draw->AddTriangleFilled(
+    ImVec2(a2_end.x - 2*s, a2_end.y + 5*s),
+    ImVec2(a2_end.x + 5*s, a2_end.y - 2*s),
+    ImVec2(a2_end.x - 5*s, a2_end.y - 2*s),
+    gray
+  );
+
+  // Arrow 3: Green -> Blue (left side)
+  ImVec2 a3_start(pos.x + 40*s, pos.y + 60*s);
+  ImVec2 a3_end(pos.x + 32*s, pos.y + 44*s);
+  draw->AddLine(a3_start, a3_end, gray, lineWidth);
+  // Arrowhead
+  draw->AddTriangleFilled(
+    ImVec2(a3_end.x - 2*s, a3_end.y - 5*s),
+    ImVec2(a3_end.x - 5*s, a3_end.y + 2*s),
+    ImVec2(a3_end.x + 5*s, a3_end.y + 2*s),
+    gray
+  );
+}
+
 void renderUI() {
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplGlfw_NewFrame();
@@ -1297,7 +1361,15 @@ void renderUI() {
   ImGui::SetNextWindowPos(ImVec2(0, 0));
   ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, topBarHeight));
   ImGui::Begin("TopBar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar);
-  
+
+  // Draw icon in top-left
+  float iconSize = 50.0f;
+  ImVec2 iconPos = ImGui::GetCursorScreenPos();
+  iconPos.y += (topBarHeight - iconSize) * 0.5f - 5.0f;  // Vertically center
+  drawChronosIcon(iconPos, iconSize);
+  ImGui::Dummy(ImVec2(iconSize + 10, 0));  // Reserve space for icon
+  ImGui::SameLine();
+
   // Play/Pause
   if (paused) {
       if (ImGui::Button(" PLAY ", ImVec2(0, 30))) paused = !paused;
