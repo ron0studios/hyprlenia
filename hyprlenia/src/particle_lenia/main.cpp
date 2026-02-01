@@ -110,12 +110,23 @@ struct SimulationParams {
   
   bool showGoal = false;
 
-  
+
   bool sonificationEnabled = false;
   float audioVolume = 0.3f;
-  float minFrequency = 80.0f;    
-  float maxFrequency = 800.0f;   
-  int maxVoices = 32;            
+  float minFrequency = 80.0f;
+  float maxFrequency = 800.0f;
+  int maxVoices = 32;
+
+  // Black hole / gravitational lensing
+  bool blackHoleEnabled = false;
+  float blackHoleX = 0.0f;       // Position in world coords (or screen center if 0,0)
+  float blackHoleY = 0.0f;
+  float blackHoleZ = 0.0f;
+  float schwarzschildRadius = 0.08f;  // Apparent size in screen units (0-1)
+  float lensingStrength = 1.0f;       // Multiplier for lensing effect
+  bool showAccretionDisk = true;
+  float diskInnerRadius = 1.5f;       // Inner radius as multiple of r_s
+  float diskOuterRadius = 4.0f;       // Outer radius as multiple of r_s
 };
 
 
@@ -166,6 +177,69 @@ struct AudioState {
 };
 
 AudioState g_audio;
+
+// Framebuffer for multi-pass rendering (needed for gravitational lensing)
+struct Framebuffer {
+  GLuint fbo = 0;
+  GLuint colorTexture = 0;
+  GLuint depthRBO = 0;
+  int width = 0;
+  int height = 0;
+
+  void init(int w, int h) {
+    width = w;
+    height = h;
+
+    // Create framebuffer
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    // Create color texture
+    glGenTextures(1, &colorTexture);
+    glBindTexture(GL_TEXTURE_2D, colorTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colorTexture, 0);
+
+    // Create depth renderbuffer
+    glGenRenderbuffers(1, &depthRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, depthRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRBO);
+
+    // Check completeness
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+      std::cerr << "Framebuffer not complete!" << std::endl;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  }
+
+  void resize(int w, int h) {
+    if (w == width && h == height) return;
+    cleanup();
+    init(w, h);
+  }
+
+  void bind() const {
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, width, height);
+  }
+
+  void unbind() const {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  }
+
+  void cleanup() {
+    if (colorTexture) glDeleteTextures(1, &colorTexture);
+    if (depthRBO) glDeleteRenderbuffers(1, &depthRBO);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    fbo = colorTexture = depthRBO = 0;
+  }
+};
 
 
 void audioCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
@@ -346,9 +420,14 @@ class ParticleLeniaSimulation {
   GLuint foodTexture = 0;
   int foodGridSize = 128;  
 
-  
+
   GLuint goalTexture = 0;
   int goalGridSize = 512;
+
+  // Gravitational lensing
+  RenderShader lensingShader;
+  Framebuffer sceneFramebuffer;
+  float lensingTime = 0.0f;
 
   std::mt19937 rng;
 
@@ -386,14 +465,23 @@ class ParticleLeniaSimulation {
                                  "shaders/particle_lenia_display.frag");
     displayShader.init();
 
-    
+
     init3D();
 
-    
+
     initFood();
 
-    
+
     initGoal();
+
+    // Initialize gravitational lensing
+    initLensing();
+  }
+
+  void initLensing() {
+    lensingShader = RenderShader("shaders/lensing.vert", "shaders/lensing.frag");
+    lensingShader.init();
+    sceneFramebuffer.init(WINDOW_WIDTH, WINDOW_HEIGHT);
   }
 
   void initGoal() {
@@ -1072,6 +1160,40 @@ class ParticleLeniaSimulation {
     glDisable(GL_DEPTH_TEST);
   }
 
+  // Render gravitational lensing post-process effect
+  void displayLensing(int windowWidth, int windowHeight, float dt) {
+    lensingTime += dt;
+
+    // Ensure framebuffer matches window size
+    sceneFramebuffer.resize(windowWidth, windowHeight);
+
+    lensingShader.use();
+
+    // Bind scene texture
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, sceneFramebuffer.colorTexture);
+    lensingShader.setUniform("u_SceneTexture", 0);
+
+    // Black hole position (screen center by default, or transform world coords)
+    float bhScreenX = 0.5f + params.blackHoleX / params.worldWidth * params.zoom;
+    float bhScreenY = 0.5f + params.blackHoleY / params.worldHeight * params.zoom;
+    lensingShader.setUniform("u_BlackHoleScreenPos", bhScreenX, bhScreenY);
+
+    // Lensing parameters
+    lensingShader.setUniform("u_SchwarzschildRadius", params.schwarzschildRadius);
+    lensingShader.setUniform("u_LensingStrength", params.lensingStrength);
+    lensingShader.setUniform("u_AspectRatio", static_cast<float>(windowWidth) / static_cast<float>(windowHeight));
+
+    // Accretion disk
+    lensingShader.setUniform("u_ShowAccretionDisk", params.showAccretionDisk);
+    lensingShader.setUniform("u_DiskInnerRadius", params.diskInnerRadius);
+    lensingShader.setUniform("u_DiskOuterRadius", params.diskOuterRadius);
+    lensingShader.setUniform("u_Time", lensingTime);
+
+    // Render fullscreen quad
+    lensingShader.render();
+  }
+
   void updateStats() {
     Buffer& activeBuffer = useBufferA ? particleBufferA : particleBufferB;
     std::vector<float> data = activeBuffer.getData();
@@ -1595,6 +1717,37 @@ void renderUI() {
     }
   }
 
+  // Black Hole / Gravitational Lensing
+  if (ImGui::CollapsingHeader("Black Hole")) {
+    ImGui::Checkbox("Enable Black Hole", &simulation.params.blackHoleEnabled);
+
+    if (simulation.params.blackHoleEnabled) {
+      ImGui::Indent();
+
+      ImGui::TextColored(ImVec4(0.8f, 0.4f, 1.0f, 1.0f), "Gravitational Lensing Active");
+
+      ImGui::Spacing();
+      ImGui::TextDisabled("Position (World Coords)");
+      ImGui::DragFloat("BH X", &simulation.params.blackHoleX, 0.5f, -50.0f, 50.0f);
+      ImGui::DragFloat("BH Y", &simulation.params.blackHoleY, 0.5f, -50.0f, 50.0f);
+
+      ImGui::Spacing();
+      ImGui::TextDisabled("Lensing Effect");
+      ImGui::DragFloat("Event Horizon Size", &simulation.params.schwarzschildRadius, 0.005f, 0.01f, 0.3f, "%.3f");
+      ImGui::DragFloat("Lensing Strength", &simulation.params.lensingStrength, 0.1f, 0.0f, 5.0f);
+
+      ImGui::Spacing();
+      ImGui::TextDisabled("Accretion Disk");
+      ImGui::Checkbox("Show Accretion Disk", &simulation.params.showAccretionDisk);
+      if (simulation.params.showAccretionDisk) {
+        ImGui::DragFloat("Inner Radius", &simulation.params.diskInnerRadius, 0.1f, 1.5f, 3.0f, "%.1f r_s");
+        ImGui::DragFloat("Outer Radius", &simulation.params.diskOuterRadius, 0.1f, 2.0f, 8.0f, "%.1f r_s");
+      }
+
+      ImGui::Unindent();
+    }
+  }
+
   ImGui::Separator();
   ImGui::TextDisabled("Controls: WASD=Cam | Q/E=Zoom");
   ImGui::TextDisabled("Mouse: Left Click to Interact");
@@ -1806,19 +1959,52 @@ int main() {
       }
     }
 
-    
-    if (simulation.params.view3D) {
-      
-      glClearColor(0.01f, 0.03f, 0.06f, 1.0f);
-    } else {
-      glClearColor(0.0f, 0.02f, 0.05f, 1.0f);
-    }
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    // Calculate delta time for animations
+    static auto lastFrameTime = std::chrono::high_resolution_clock::now();
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    float deltaTime = std::chrono::duration<float>(currentTime - lastFrameTime).count();
+    lastFrameTime = currentTime;
 
-    if (simulation.params.view3D) {
-      simulation.display3D(WINDOW_WIDTH, WINDOW_HEIGHT);
+    // Render scene (with or without black hole lensing)
+    if (simulation.params.blackHoleEnabled) {
+      // Pass 1: Render scene to framebuffer
+      simulation.sceneFramebuffer.resize(WINDOW_WIDTH, WINDOW_HEIGHT);
+      simulation.sceneFramebuffer.bind();
+
+      if (simulation.params.view3D) {
+        glClearColor(0.01f, 0.03f, 0.06f, 1.0f);
+      } else {
+        glClearColor(0.0f, 0.02f, 0.05f, 1.0f);
+      }
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+      if (simulation.params.view3D) {
+        simulation.display3D(WINDOW_WIDTH, WINDOW_HEIGHT);
+      } else {
+        simulation.display(WINDOW_WIDTH, WINDOW_HEIGHT);
+      }
+
+      simulation.sceneFramebuffer.unbind();
+
+      // Pass 2: Apply gravitational lensing post-process
+      glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
+      glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      simulation.displayLensing(WINDOW_WIDTH, WINDOW_HEIGHT, deltaTime);
     } else {
-      simulation.display(WINDOW_WIDTH, WINDOW_HEIGHT);
+      // Normal rendering without lensing
+      if (simulation.params.view3D) {
+        glClearColor(0.01f, 0.03f, 0.06f, 1.0f);
+      } else {
+        glClearColor(0.0f, 0.02f, 0.05f, 1.0f);
+      }
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+      if (simulation.params.view3D) {
+        simulation.display3D(WINDOW_WIDTH, WINDOW_HEIGHT);
+      } else {
+        simulation.display(WINDOW_WIDTH, WINDOW_HEIGHT);
+      }
     }
 
     renderUI();
