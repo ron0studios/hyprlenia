@@ -9,6 +9,8 @@
 in float vEnergy;
 in float vSpecies;
 in vec3 vWorldPos;
+in float vAggression;
+in float vDefense;
 
 out vec4 FragColor;
 
@@ -24,6 +26,31 @@ vec3 hsl2rgb(vec3 c) {
 vec3 speciesColor(float species, float energy) {
     float hue = mod(species * 0.3, 1.0);
     return hsl2rgb(vec3(hue, 0.7 + energy * 0.3, 0.4 + energy * 0.4));
+}
+
+// Predator-prey coloring: red (predator) <-> blue (prey) <-> green (balanced)
+vec3 predatorPreyColor(float aggression, float defense, float energy) {
+    // Predator score: high = predator (red), low = prey (blue), middle = balanced (green)
+    float predatorScore = (aggression - defense + 1.0) * 0.5;  // Normalize to 0-1
+    
+    vec3 predatorColor = vec3(1.0, 0.15, 0.05);   // Aggressive red-orange
+    vec3 preyColor = vec3(0.1, 0.4, 1.0);          // Defensive blue
+    vec3 balancedColor = vec3(0.2, 0.95, 0.3);     // Neutral green
+    
+    vec3 color;
+    if (predatorScore > 0.6) {
+        // Predator range: interpolate green -> red
+        color = mix(balancedColor, predatorColor, (predatorScore - 0.6) / 0.4);
+    } else if (predatorScore < 0.4) {
+        // Prey range: interpolate blue -> green
+        color = mix(preyColor, balancedColor, predatorScore / 0.4);
+    } else {
+        // Balanced range
+        color = balancedColor;
+    }
+    
+    // Brightness scales with energy
+    return color * (0.5 + energy * 0.5);
 }
 
 void main() {
@@ -44,15 +71,17 @@ void main() {
     float sphere = 1.0 - dist;
     sphere = pow(sphere, 1.5);
     
-    // Color based on species and energy
-    vec3 color = speciesColor(vSpecies, vEnergy);
+    // Color based on predator-prey status (aggression vs defense)
+    vec3 color = predatorPreyColor(vAggression, vDefense, vEnergy);
     
-    // Glow effect
-    float glow = exp(-dist * 2.0) * vEnergy;
+    // Glow effect - predators glow brighter!
+    float glowStrength = 0.5 + max(0.0, vAggression) * 1.5;  // Aggressive = brighter glow
+    float glow = exp(-dist * 2.0) * vEnergy * glowStrength;
     color += vec3(1.0) * glow * 0.5;
     
-    // Subtle pulsing
-    float pulse = sin(u_Time * 3.0 + vSpecies * 2.0) * 0.1 + 0.9;
+    // Subtle pulsing - faster for predators
+    float pulseSpeed = 3.0 + max(0.0, vAggression) * 4.0;
+    float pulse = sin(u_Time * pulseSpeed + vSpecies * 2.0) * 0.1 + 0.9;
     color *= pulse;
     
     // Alpha based on distance from center

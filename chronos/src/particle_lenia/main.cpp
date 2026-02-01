@@ -63,9 +63,14 @@ struct SimulationParams {
   bool evolutionEnabled = false;
   float birthRate = 0.001f;        // Chance to reproduce per step
   float deathRate = 0.0f;          // Base death rate (0 = no random death)
-  float mutationRate = 0.1f;       // Mutation strength
-  float energyDecay = 0.0f;        // Energy loss per step (0 = no decay)
+  float mutationRate = 0.15f;      // Mutation strength (slightly higher for faster evolution)
+  float energyDecay = 0.001f;      // Energy loss per step (small baseline decay)
   float energyFromGrowth = 0.01f;  // Energy gained from good growth
+
+  // Predator-prey parameters
+  float predationRadius = 3.0f;    // How close to steal energy (larger = more interactions)
+  float predationRate = 0.015f;    // Energy transfer rate per interaction
+  float aggressionCost = 0.001f;   // Metabolism penalty for being aggressive
 
   // View parameters
   float translateX = 0.0f;
@@ -305,7 +310,7 @@ class ParticleLeniaSimulation {
       std::uniform_real_distribution<float> posDistZ(-params.worldDepth / 2.0f,
                                                      params.worldDepth / 2.0f);
       std::uniform_real_distribution<float> speciesDist(0.0f, 3.0f);
-      std::uniform_real_distribution<float> dnaDist(-0.2f, 0.2f);
+      std::uniform_real_distribution<float> dnaDist(-0.4f, 0.4f);  // Wider range for predator-prey variation
 
       #pragma omp for
       for (int i = 0; i < params.maxParticles; i++) {
@@ -401,6 +406,11 @@ class ParticleLeniaSimulation {
     stepShader.setUniform("u_MutationRate", params.mutationRate);
     stepShader.setUniform("u_EnergyDecay", params.energyDecay);
     stepShader.setUniform("u_EnergyFromGrowth", params.energyFromGrowth);
+    
+   // Predator-prey uniforms
+    stepShader.setUniform("u_PredationRadius", params.predationRadius);
+    stepShader.setUniform("u_PredationRate", params.predationRate);
+    stepShader.setUniform("u_AggressionCost", params.aggressionCost);
     
     // Food system uniforms
     stepShader.setUniform("u_FoodGridSize", foodGridSize);
@@ -595,7 +605,7 @@ class ParticleLeniaSimulation {
       int base = i * PARTICLE_FLOATS;
       if (data[base + 6] < 0.01f) {  // Dead particle (energy at index 6)
         std::uniform_real_distribution<float> speciesDist(0.0f, 3.0f);
-        std::uniform_real_distribution<float> dnaDist(-0.2f, 0.2f);
+        std::uniform_real_distribution<float> dnaDist(-0.4f, 0.4f);  // Wider range for predator-prey variation
 
         data[base + 0] = x;                 // x
         data[base + 1] = y;                 // y
@@ -806,6 +816,15 @@ void renderUI() {
                        0.0001f, 0.0f, 0.01f, "%.5f");
       ImGui::DragFloat("Vitality Gain", &simulation.params.energyFromGrowth,
                        0.001f, 0.0f, 0.1f);
+
+      ImGui::Spacing();
+      ImGui::TextDisabled("Predator-Prey Dynamics");
+      ImGui::DragFloat("Predation Radius", &simulation.params.predationRadius,
+                       0.1f, 0.5f, 5.0f);
+      ImGui::DragFloat("Predation Rate", &simulation.params.predationRate,
+                       0.001f, 0.0f, 0.1f, "%.4f");
+      ImGui::DragFloat("Aggression Cost", &simulation.params.aggressionCost,
+                       0.0001f, 0.0f, 0.01f, "%.5f");
     }
   }
 

@@ -32,11 +32,15 @@ uniform vec3 u_CameraPos;
 out float vEnergy;
 out float vSpecies;
 out vec3 vWorldPos;
+out float vAggression;
+out float vDefense;
 
 // Particle data accessors (14 floats per particle)
 #define READ_PARTICLE_POS(i) vec3(particles[(i) * 14], particles[(i) * 14 + 1], particles[(i) * 14 + 2])
 #define READ_PARTICLE_ENERGY(i) particles[(i) * 14 + 6]
 #define READ_PARTICLE_SPECIES(i) particles[(i) * 14 + 7]
+#define READ_PARTICLE_AGGRESSION(i) particles[(i) * 14 + 9]
+#define READ_PARTICLE_DEFENSE(i) particles[(i) * 14 + 10]
 
 void main() {
     int idx = gl_VertexID;
@@ -45,6 +49,8 @@ void main() {
     vec3 pos = READ_PARTICLE_POS(idx);
     vEnergy = READ_PARTICLE_ENERGY(idx);
     vSpecies = READ_PARTICLE_SPECIES(idx);
+    vAggression = READ_PARTICLE_AGGRESSION(idx);
+    vDefense = READ_PARTICLE_DEFENSE(idx);
 
     // Skip dead particles
     if (vEnergy < 0.01) {

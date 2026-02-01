@@ -53,10 +53,37 @@ vec3 speciesColor(float species, float energy) {
     return hsl2rgb(vec3(hue, 0.7 + energy * 0.3, 0.3 + energy * 0.4));
 }
 
+// Predator-prey coloring: red (predator) <-> blue (prey) <-> green (balanced)
+vec3 predatorPreyColor(float aggression, float defense, float energy) {
+    // Predator score: high = predator (red), low = prey (blue), middle = balanced (green)
+    float predatorScore = (aggression - defense + 1.0) * 0.5;  // Normalize to 0-1
+    
+    vec3 predatorColor = vec3(1.0, 0.15, 0.05);   // Aggressive red-orange
+    vec3 preyColor = vec3(0.1, 0.4, 1.0);          // Defensive blue
+    vec3 balancedColor = vec3(0.2, 0.95, 0.3);     // Neutral green
+    
+    vec3 color;
+    if (predatorScore > 0.6) {
+        // Predator range: interpolate green -> red
+        color = mix(balancedColor, predatorColor, (predatorScore - 0.6) / 0.4);
+    } else if (predatorScore < 0.4) {
+        // Prey range: interpolate blue -> green
+        color = mix(preyColor, balancedColor, predatorScore / 0.4);
+    } else {
+        // Balanced range
+        color = balancedColor;
+    }
+    
+    // Brightness scales with energy
+    return color * (0.5 + energy * 0.5);
+}
+
 // Inline particle read (14 floats per particle: x,y,z, vx,vy,vz, energy, species, age, dna[5])
 #define READ_PARTICLE_POS(i) vec2(particles[(i) * 14], particles[(i) * 14 + 1])
 #define READ_PARTICLE_MASS(i) particles[(i) * 14 + 6]
 #define READ_PARTICLE_SPECIES(i) particles[(i) * 14 + 7]
+#define READ_PARTICLE_AGGRESSION(i) particles[(i) * 14 + 9]
+#define READ_PARTICLE_DEFENSE(i) particles[(i) * 14 + 10]
 
 // Wrapped distance squared (fast)
 // World goes from -worldWidth/2 to +worldWidth/2, so total size = worldWidth
@@ -208,6 +235,7 @@ void main() {
     float minDist2 = 1000.0;
     vec3 closestColor = vec3(1.0);
     float closestEnergy = 0.0;
+    float closestAggression = 0.0;
     
     float glowRadius = 0.5 / u_Zoom;
     float glowRadius2 = glowRadius * glowRadius;
@@ -226,18 +254,21 @@ void main() {
         if (d2 < minDist2) {
             minDist2 = d2;
             closestEnergy = mass;
-            closestColor = speciesColor(READ_PARTICLE_SPECIES(i), mass);
+            closestAggression = READ_PARTICLE_AGGRESSION(i);
+            // Use predator-prey coloring instead of species coloring
+            closestColor = predatorPreyColor(READ_PARTICLE_AGGRESSION(i), READ_PARTICLE_DEFENSE(i), mass);
         }
     }
     
     float minDist = sqrt(minDist2);
     float particleRadius = 0.15 / u_Zoom;
     
-    // Glow
+    // Glow - predators glow brighter!
+    float glowStrength = 0.5 + max(0.0, closestAggression) * 1.5;
     if (minDist < glowRadius) {
         float glow = 1.0 - minDist / glowRadius;
         glow *= glow;
-        color = mix(color, closestColor * 0.5, glow * closestEnergy * 0.5);
+        color = mix(color, closestColor * 0.5, glow * closestEnergy * glowStrength);
     }
     
     // Core
