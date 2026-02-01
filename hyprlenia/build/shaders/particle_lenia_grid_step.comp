@@ -1,0 +1,200 @@
+#version 460 core
+
+/*
+ * SPATIAL HASH OPTIMIZED PARTICLE LENIA PHYSICS
+ *
+ * Uses sorted particles and grid structure to only check neighbors in
+ * current cell + 8 adjacent cells. Reduces O(N²) to O(N*k) where k is
+ * average particles per cell neighborhood.
+ *
+ * Memory access is now linear within cells - very cache-friendly!
+ */
+
+layout(local_size_x = 256) in;
+
+struct Particle {
+  vec2 position;
+  vec2 velocity;
+  float energy;
+  float mass;
+  float padding1;
+  float padding2;
+};
+
+layout(std430, binding = 0) buffer ParticlesSorted {
+  Particle particlesSorted[];
+};
+
+layout(std430, binding = 1) buffer ParticlesOut { Particle particlesOut[]; };
+
+layout(std430, binding = 2) buffer GridOffsets { uint offsets[]; };
+
+layout(std430, binding = 3) buffer GridCounts {
+  uint counts[];  // Original counts (before prefix sum modified them)
+};
+
+layout(std430, binding = 4) buffer ParticleCells { uint particleCells[]; };
+
+// Simulation parameters
+uniform int u_NumParticles;
+uniform float u_DeltaTime;
+uniform bool u_EnableEvolution;
+
+// Grid parameters
+uniform vec2 u_WorldMin;
+uniform vec2 u_WorldMax;
+uniform float u_CellSize;
+uniform int u_GridWidth;
+uniform int u_GridHeight;
+uniform int u_NumCells;
+
+// Kernel parameters
+uniform float u_Mu_k;     // Peak distance
+uniform float u_Sigma_k;  // Spread
+uniform float u_W_k;      // Repulsion weight
+uniform float u_Mu_g;     // Growth peak
+uniform float u_Sigma_g;  // Growth spread
+uniform float u_C_rep;    // Repulsion constant
+
+// Energy & evolution
+uniform float u_EnergyDecay;
+uniform float u_EnergyFromGrowth;
+uniform float u_BaseEnergy;
+
+// Constants
+const float PI = 3.14159265359;
+
+// Gaussian kernel
+float gaussianKernel(float r) {
+  float diff = r - u_Mu_k;
+  return exp(-0.5 * (diff * diff) / (u_Sigma_k * u_Sigma_k));
+}
+
+// Growth function
+float growthFunction(float u) {
+  float diff = u - u_Mu_g;
+  return 2.0 * exp(-0.5 * (diff * diff) / (u_Sigma_g * u_Sigma_g)) - 1.0;
+}
+
+// Get cell ID from position
+int positionToCell(vec2 pos) {
+  vec2 normalized = (pos - u_WorldMin) / (u_WorldMax - u_WorldMin);
+  int cx = clamp(int(normalized.x * float(u_GridWidth)), 0, u_GridWidth - 1);
+  int cy = clamp(int(normalized.y * float(u_GridHeight)), 0, u_GridHeight - 1);
+  return cy * u_GridWidth + cx;
+}
+
+// Get cell coordinates from cell ID
+ivec2 cellIdToCoords(int cellId) {
+  return ivec2(cellId % u_GridWidth, cellId / u_GridWidth);
+}
+
+// Get cell ID from coordinates (with bounds check)
+int coordsToCellId(ivec2 coords) {
+  if (coords.x < 0 || coords.x >= u_GridWidth || coords.y < 0 ||
+      coords.y >= u_GridHeight) {
+    return -1;
+  }
+  return coords.y * u_GridWidth + coords.x;
+}
+
+// Process all particles in a cell range
+void processCellParticles(int cellId, uint myIdx, Particle me, inout vec2 force,
+                          inout float fieldSum, inout float totalWeight) {
+  if (cellId < 0 || cellId >= u_NumCells) return;
+
+  uint start = offsets[cellId];
+  uint count = counts[cellId];
+
+  for (uint j = start; j < start + count; j++) {
+    if (j == myIdx) continue;  // Skip self
+
+    Particle other = particlesSorted[j];
+
+    vec2 delta = other.position - me.position;
+    float dist = length(delta);
+
+    // Cutoff at 3 sigma beyond peak
+    float maxDist = u_Mu_k + 3.0 * u_Sigma_k;
+    if (dist > maxDist || dist < 0.0001) continue;
+
+    vec2 dir = delta / dist;
+    float kernel = gaussianKernel(dist);
+    float weightedKernel = kernel * other.mass;
+
+    fieldSum += weightedKernel;
+    totalWeight += other.mass;
+
+    // Attraction from kernel
+    float attraction = u_W_k * weightedKernel;
+
+    // Soft repulsion at close range
+    float repulsion = u_C_rep * exp(-dist * 10.0);
+
+    force += (attraction - repulsion) * dir;
+  }
+}
+
+void main() {
+  uint idx = gl_GlobalInvocationID.x;
+
+  if (idx >= uint(u_NumParticles)) return;
+
+  Particle me = particlesSorted[idx];
+  int myCellId = int(particleCells[idx]);
+  ivec2 myCoords = cellIdToCoords(myCellId);
+
+  vec2 force = vec2(0.0);
+  float fieldSum = 0.0;
+  float totalWeight = 0.0;
+
+  // Check current cell and 8 neighbors
+  for (int dy = -1; dy <= 1; dy++) {
+    for (int dx = -1; dx <= 1; dx++) {
+      int neighborCell = coordsToCellId(myCoords + ivec2(dx, dy));
+      processCellParticles(neighborCell, idx, me, force, fieldSum, totalWeight);
+    }
+  }
+
+  // Compute growth
+  float growth = 0.0;
+  if (totalWeight > 0.0) {
+    float u = fieldSum / totalWeight;
+    growth = growthFunction(u);
+  }
+
+  // Use growth for additional force
+  force += growth * 0.1;
+
+  // Update velocity and position
+  vec2 newVelocity = me.velocity + force * u_DeltaTime;
+  newVelocity *= 0.98;  // Damping
+
+  vec2 newPosition = me.position + newVelocity * u_DeltaTime;
+
+  // Wrap around world boundaries
+  vec2 worldSize = u_WorldMax - u_WorldMin;
+  newPosition =
+      u_WorldMin + mod(newPosition - u_WorldMin + worldSize, worldSize);
+
+  // Energy update
+  float newEnergy = me.energy;
+  float newMass = me.mass;
+
+  if (u_EnableEvolution) {
+    float energyGain = growth * u_EnergyFromGrowth;
+    newEnergy = me.energy + energyGain - u_EnergyDecay;
+    newEnergy = max(newEnergy, 0.0);
+  }
+
+  // Write output
+  Particle result;
+  result.position = newPosition;
+  result.velocity = newVelocity;
+  result.energy = newEnergy;
+  result.mass = newMass;
+  result.padding1 = 0.0;
+  result.padding2 = 0.0;
+
+  particlesOut[idx] = result;
+}

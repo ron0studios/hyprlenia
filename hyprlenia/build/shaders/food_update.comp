@@ -1,0 +1,58 @@
+#version 460 core
+
+/*
+ * Food Update Compute Shader
+ * 
+ * Handles food regeneration and decay on a 2D grid.
+ * Food spawns randomly at a configurable rate.
+ * Food is consumed by particles (handled in step shader).
+ */
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(rgba16f, binding = 0) uniform image2D u_FoodTexture;
+
+uniform int u_FoodGridSize;
+uniform float u_FoodSpawnRate;      // Probability of spawning food per cell per frame
+uniform float u_FoodMaxAmount;      // Maximum food per cell
+uniform float u_FoodDecayRate;      // Natural decay rate
+uniform float u_Time;
+uniform int u_RandomSeed;
+
+// Hash function for random numbers
+float hash(ivec2 pos, int seed) {
+    int x = pos.x * 73856093 ^ pos.y * 19349663 ^ seed * 83492791;
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = (x >> 16) ^ x;
+    return float(x & 0x7FFFFFFF) / float(0x7FFFFFFF);
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (texel.x >= u_FoodGridSize || texel.y >= u_FoodGridSize) return;
+    
+    // Read current food state
+    vec4 food = imageLoad(u_FoodTexture, texel);
+    float currentFood = food.r;
+    
+    // Random number for this cell
+    float r = hash(texel, u_RandomSeed);
+    
+    // Spawn new food with probability
+    if (r < u_FoodSpawnRate) {
+        // Random food amount (0.2 to 0.5)
+        float spawnAmount = 0.2 + hash(texel, u_RandomSeed + 1) * 0.3;
+        currentFood = min(currentFood + spawnAmount, u_FoodMaxAmount);
+    }
+    
+    // Natural decay (very slow)
+    currentFood *= (1.0 - u_FoodDecayRate);
+    
+    // Store food amount in R channel
+    // G channel: "freshness" indicator for visualization (1.0 when just spawned)
+    float freshness = food.g * 0.95;  // Decay freshness
+    if (r < u_FoodSpawnRate) freshness = 1.0;  // Reset if spawned
+    
+    imageStore(u_FoodTexture, texel, vec4(currentFood, freshness, 0.0, 1.0));
+}

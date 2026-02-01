@@ -1,0 +1,485 @@
+#version 460 core
+
+/*
+ * CHRONOS - 3D Particle Lenia with Food-Based Evolution
+ *
+ * Based on the standard Particle Lenia formulation extended to 3D:
+ * - U(x) = Σ K(||x - p_i||) where K is a Gaussian shell kernel
+ * - G(U) = exp(-(U - μ_G)² / σ_G²) is the growth function
+ * - R(x) = (c_rep/2) Σ max(1 - ||x - p_i||, 0)² is repulsion
+ * - E(x) = R(x) - G(U(x)) is the energy field
+ * - Particles move down the energy gradient: dx/dt = -∇E
+ *
+ * Particle layout (15 floats):
+ *   0-2: position (x, y, z)
+ *   3-5: velocity (vx, vy, vz)
+ *   6: energy
+ *   7: species
+ *   8: age
+ *   9-13: dna[5]
+ *   14: potential (U field value for sonification)
+ */
+
+layout(local_size_x = 128) in;
+
+layout(std430, binding = 0) readonly buffer ParticlesIn {
+  float particlesIn[];
+};
+
+layout(std430, binding = 1) buffer ParticlesOut { float particlesOut[]; };
+
+// Food texture - read/write for consumption
+layout(rgba16f, binding = 0) uniform image2D u_FoodTexture;
+
+// Goal Texture
+layout(binding = 1) uniform sampler2D u_GoalTexture;
+uniform int u_GoalMode;
+uniform float u_GoalStrength;
+
+// Shared memory for particle data (3D position + energy)
+shared vec4 tileData[128];  // xyz = position, w = energy
+
+uniform int u_NumParticles;
+uniform int u_AliveCount;
+uniform float u_WorldWidth;
+uniform float u_WorldHeight;
+uniform float u_WorldDepth;
+uniform float u_Wk;       // Kernel weight
+uniform float u_MuK;      // Kernel peak distance
+uniform float u_SigmaK2;  // Kernel width squared
+uniform float u_MuG;      // Growth target density
+uniform float u_SigmaG2;  // Growth width squared
+uniform float u_Crep;     // Repulsion strength
+uniform float u_Dt;       // Time step
+uniform float u_H;        // Finite difference step size
+uniform bool u_EvolutionEnabled;
+uniform float u_BirthRate;
+uniform float u_DeathRate;
+uniform float u_MutationRate;
+uniform float u_EnergyDecay;
+uniform float u_EnergyFromGrowth;
+uniform int u_RandomSeed;
+
+uniform bool u_FluidMode;
+uniform float u_Gravity;
+
+// Food system uniforms
+uniform int u_FoodGridSize;
+uniform float u_FoodConsumptionRadius;
+
+// Convert world position to food texture coordinates (XY plane projection)
+ivec2 worldToFoodTexel(vec3 worldPos) {
+  vec2 uv = (worldPos.xy + vec2(u_WorldWidth, u_WorldHeight) * 0.5) /
+            vec2(u_WorldWidth, u_WorldHeight);
+  uv = clamp(uv, 0.0, 0.999);
+  return ivec2(uv * float(u_FoodGridSize));
+}
+
+// Sample and consume food at a position, returns amount consumed
+float consumeFood(vec3 worldPos, float maxConsume) {
+  ivec2 texel = worldToFoodTexel(worldPos);
+  vec4 food = imageLoad(u_FoodTexture, texel);
+  float available = food.r;
+  float consumed = min(available, maxConsume);
+
+  if (consumed > 0.001) {
+    food.r = available - consumed;
+    imageStore(u_FoodTexture, texel, food);
+  }
+
+  return consumed;
+}
+
+// Get food amount at position without consuming
+float sampleFood(vec3 worldPos) {
+  ivec2 texel = worldToFoodTexel(worldPos);
+  return imageLoad(u_FoodTexture, texel).r;
+}
+
+// Wrap delta for toroidal 3D world
+vec3 wrappedDelta(vec3 from, vec3 to) {
+  vec3 d = to - from;
+  float halfW = u_WorldWidth * 0.5;
+  float halfH = u_WorldHeight * 0.5;
+  float halfD = u_WorldDepth * 0.5;
+
+  if (d.x > halfW)
+    d.x -= u_WorldWidth;
+  else if (d.x < -halfW)
+    d.x += u_WorldWidth;
+
+  if (d.y > halfH)
+    d.y -= u_WorldHeight;
+  else if (d.y < -halfH)
+    d.y += u_WorldHeight;
+
+  if (d.z > halfD)
+    d.z -= u_WorldDepth;
+  else if (d.z < -halfD)
+    d.z += u_WorldDepth;
+
+  return d;
+}
+
+vec3 wrapPos(vec3 pos) {
+  float halfW = u_WorldWidth * 0.5;
+  float halfH = u_WorldHeight * 0.5;
+  float halfD = u_WorldDepth * 0.5;
+
+  pos.x = mod(pos.x + halfW, u_WorldWidth) - halfW;
+  pos.y = mod(pos.y + halfH, u_WorldHeight) - halfH;
+  pos.z = mod(pos.z + halfD, u_WorldDepth) - halfD;
+
+  return pos;
+}
+
+float hash(int seed) {
+  int x = seed;
+  x = ((x >> 16) ^ x) * 0x45d9f3b;
+  x = ((x >> 16) ^ x) * 0x45d9f3b;
+  x = (x >> 16) ^ x;
+  return float(x & 0x7FFFFFFF) / float(0x7FFFFFFF);
+}
+
+float random(int idx, int offset) {
+  return hash(idx * 1337 + offset * 7919 + u_RandomSeed * 104729);
+}
+
+// Kernel function K(r) - Gaussian shell at distance μ_k
+float kernelK(float r) {
+  float diff = r - u_MuK;
+  return u_Wk * exp(-diff * diff / u_SigmaK2);
+}
+
+// Compute U and R fields at a given 3D position from the current tile
+vec2 computeUR(vec3 queryPos, int tileEnd) {
+  float U = 0.0;
+  float R = 0.0;
+
+  for (int j = 0; j < tileEnd; j++) {
+    float otherEnergy = tileData[j].w;
+    if (otherEnergy < 0.01) continue;
+
+    vec3 otherPos = tileData[j].xyz;
+    vec3 delta = wrappedDelta(queryPos, otherPos);
+    float dist = length(delta);
+
+    // Kernel contribution to U
+    U += kernelK(dist);
+
+    // Repulsion contribution to R
+    if (dist > 0.0001 && dist < 1.0) {
+      float proximity = 1.0 - dist;
+      R += 0.5 * u_Crep * proximity * proximity;
+    }
+  }
+
+  return vec2(U, R);
+}
+
+// Compute energy E = R - G(U)
+float computeE(float U, float R) {
+  float diff = U - u_MuG;
+  float G = exp(-diff * diff / u_SigmaG2);
+  return R - G;
+}
+
+void main() {
+  uint idx = gl_GlobalInvocationID.x;
+  uint localIdx = gl_LocalInvocationID.x;
+
+  if (idx >= u_NumParticles) return;
+
+  int i = int(idx);
+  int base = i * 15;  // 15 floats per particle
+
+  // Read my particle data (3D)
+  vec3 myPos =
+      vec3(particlesIn[base], particlesIn[base + 1], particlesIn[base + 2]);
+  vec3 myVel =
+      vec3(particlesIn[base + 3], particlesIn[base + 4], particlesIn[base + 5]);
+  float myEnergy = particlesIn[base + 6];
+  float mySpecies = particlesIn[base + 7];
+  float myAge = particlesIn[base + 8];
+  float myDna[5];
+  for (int d = 0; d < 5; d++) {
+    myDna[d] = particlesIn[base + 9 + d];
+  }
+
+  // Dead particles stay dead (UNLESS in Fluid Mode where they respawn/persist)
+  if (myEnergy < 0.01) {
+    if (u_FluidMode) {
+       myEnergy = 1.0; // Resurrect for fluid sim
+    } else {
+        for (int j = 0; j < 15; j++) {
+        particlesOut[base + j] = particlesIn[base + j];
+        }
+        return;
+    }
+  }
+
+  // Finite difference positions for 3D gradient (6 neighbors + center)
+  float h = u_H;
+  vec3 posXp = myPos + vec3(h, 0.0, 0.0);
+  vec3 posXn = myPos - vec3(h, 0.0, 0.0);
+  vec3 posYp = myPos + vec3(0.0, h, 0.0);
+  vec3 posYn = myPos - vec3(0.0, h, 0.0);
+  vec3 posZp = myPos + vec3(0.0, 0.0, h);
+  vec3 posZn = myPos - vec3(0.0, 0.0, h);
+
+  // Accumulators for fields at 7 positions (center + 6 for gradient)
+  vec2 UR_c = vec2(0.0);   // center
+  vec2 UR_xp = vec2(0.0);  // x+h
+  vec2 UR_xn = vec2(0.0);  // x-h
+  vec2 UR_yp = vec2(0.0);  // y+h
+  vec2 UR_yn = vec2(0.0);  // y-h
+  vec2 UR_zp = vec2(0.0);  // z+h
+  vec2 UR_zn = vec2(0.0);  // z-h
+
+  int numTiles = (u_NumParticles + 127) / 128;
+
+  for (int t = 0; t < numTiles; t++) {
+    // Collaborative load (3D position + energy)
+    int loadIdx = t * 128 + int(localIdx);
+    if (loadIdx < u_NumParticles) {
+      int loadBase = loadIdx * 15;
+      tileData[localIdx] = vec4(particlesIn[loadBase],       // x
+                                particlesIn[loadBase + 1],   // y
+                                particlesIn[loadBase + 2],   // z
+                                particlesIn[loadBase + 6]);  // energy
+    } else {
+      tileData[localIdx] = vec4(0.0);
+    }
+
+    barrier();
+
+    int tileEnd = min(128, u_NumParticles - t * 128);
+
+    // Compute U and R at all 7 positions
+    UR_c += computeUR(myPos, tileEnd);
+    UR_xp += computeUR(posXp, tileEnd);
+    UR_xn += computeUR(posXn, tileEnd);
+    UR_yp += computeUR(posYp, tileEnd);
+    UR_yn += computeUR(posYn, tileEnd);
+    UR_zp += computeUR(posZp, tileEnd);
+    UR_zn += computeUR(posZn, tileEnd);
+
+    barrier();
+  }
+
+  // Compute energy at each position: E = R - G(U)
+  float E_xp = computeE(UR_xp.x, UR_xp.y);
+  float E_xn = computeE(UR_xn.x, UR_xn.y);
+  float E_yp = computeE(UR_yp.x, UR_yp.y);
+  float E_yn = computeE(UR_yn.x, UR_yn.y);
+  float E_zp = computeE(UR_zp.x, UR_zp.y);
+  float E_zn = computeE(UR_zn.x, UR_zn.y);
+
+  // Central difference gradient (3D)
+  float h2 = 2.0 * h;
+  vec3 gradE = vec3((E_xp - E_xn) / h2, (E_yp - E_yn) / h2, (E_zp - E_zn) / h2);
+
+  // Growth value at center (for evolution)
+  float diff = UR_c.x - u_MuG;
+  float growth = exp(-diff * diff / u_SigmaG2);
+
+  // === FLUID MODE / PHYSICS UPDATE ===
+  vec3 newPos;
+
+  if (u_FluidMode) {
+      // 1. Force Calculation
+      // Pressure Force: -gradE points towards lower energy.
+      // In Lenia, E = R - G(U). We use this as a generalized potential.
+      vec3 force = -gradE * 4.0; // Higher multiplier for rigid fluid feel
+      
+      // Gravity
+      force.y -= u_Gravity;
+      
+      // Viscous Drag (Damping)
+      force -= myVel * 0.5;
+      
+      // 2. Integration (Semi-Implicit Euler)
+      myVel += force * u_Dt;
+      
+      // Cap velocity to prevent explosions
+      float maxSpeed = 10.0;
+      if (length(myVel) > maxSpeed) myVel = normalize(myVel) * maxSpeed;
+      
+      newPos = myPos + myVel * u_Dt;
+      
+      // 3. Boundary Conditions (Container)
+      float restitution = 0.5; // Bounciness
+      
+      float limitX = u_WorldWidth * 0.5;
+      float limitY = u_WorldHeight * 0.5;
+      float limitZ = u_WorldDepth * 0.5;
+      
+      if (newPos.x < -limitX) { newPos.x = -limitX; myVel.x *= -restitution; }
+      if (newPos.x >  limitX) { newPos.x =  limitX; myVel.x *= -restitution; }
+      
+      if (newPos.y < -limitY) { newPos.y = -limitY; myVel.y *= -restitution; }
+      if (newPos.y >  limitY) { newPos.y =  limitY; myVel.y *= -restitution; }
+      
+      if (newPos.z < -limitZ) { newPos.z = -limitZ; myVel.z *= -restitution; }
+      if (newPos.z >  limitZ) { newPos.z =  limitZ; myVel.z *= -restitution; }
+      
+  } else {
+      // === STANDARD LENIA UPDATE (Aristotelian Motion) ===
+      newPos = myPos - u_Dt * gradE;
+
+      // === GOAL ATTRACTION ===
+      if (u_GoalMode > 0 && u_GoalStrength > 0.001) {
+        // Map world pos to UV [0,1]
+        vec2 uv = (myPos.xy + vec2(u_WorldWidth, u_WorldHeight) * 0.5) /
+                  vec2(u_WorldWidth, u_WorldHeight);
+
+        // Calculate gradient with central difference
+        float eps = 0.01;
+        float valC = texture(u_GoalTexture, uv).r;
+        float valR = texture(u_GoalTexture, uv + vec2(eps, 0.0)).r;
+        float valL = texture(u_GoalTexture, uv - vec2(eps, 0.0)).r;
+        float valT = texture(u_GoalTexture, uv + vec2(0.0, eps)).r;
+        float valB = texture(u_GoalTexture, uv - vec2(0.0, eps)).r;
+
+        vec2 grad = vec2(valR - valL, valT - valB) / (2.0 * eps);
+
+        // Clamp gradient magnitude to prevent explosions
+        float gradLen = length(grad);
+        if (gradLen > 1.0) grad = normalize(grad);
+
+        // "Pull": continuous subtle force towards the goal
+        // Reduced scale to prevent "teleporting"
+        vec2 force = grad * u_GoalStrength * u_Dt * 1.5;
+
+        // "Push": chaos/agitation when far from goal (low value)
+        // If we are in the dark, move randomly to find the light
+        if (valC < 0.5) {
+          float agitation =
+              (1.0 - valC) * u_GoalStrength * u_Dt * 5.0;  // Stronger agitation
+          float r1 = random(int(idx), 100 + u_RandomSeed) * 2.0 - 1.0;
+          float r2 = random(int(idx), 101 + u_RandomSeed) * 2.0 - 1.0;
+          force += vec2(r1, r2) * agitation;
+        }
+
+        newPos.xy += force;
+      }
+      
+      newPos = wrapPos(newPos);
+      
+      // Update velocity (3D) for info purposes
+      myVel = (newPos - myPos) / max(u_Dt, 0.001);
+  }
+
+  myPos = newPos;
+  myAge += 1.0;
+
+  // Evolution mechanics - FOOD-BASED SURVIVAL
+  // STRICTLY DISABLED IN FLUID MODE
+  if (u_EvolutionEnabled && !u_FluidMode) {
+    // === FOOD CONSUMPTION ===
+    float foodConsumed = consumeFood(myPos, u_EnergyFromGrowth * 0.5);
+
+    // Cluster bonus
+    float clusterBonus = growth * 0.3;
+    float energyGain = foodConsumed * (1.0 + clusterBonus);
+
+    // === ENERGY DECAY ===
+    float energyLoss = u_EnergyDecay;
+
+    // === GOAL-BASED SELECTION ===
+    // Particles in dark areas of the goal texture lose energy faster
+    if (u_GoalMode > 0 && u_GoalStrength > 0.001) {
+      vec2 uv = (myPos.xy + vec2(u_WorldWidth, u_WorldHeight) * 0.5) /
+                vec2(u_WorldWidth, u_WorldHeight);
+      if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0) {
+        float goalVal = texture(u_GoalTexture, uv).r;
+        // Quadratic penalty: mild for near-misses, severe for total darkness
+        float penalty = pow(1.0 - goalVal, 2.0) * 0.05 * u_GoalStrength;
+        energyLoss += penalty;
+      }
+    }
+
+    // Age-based senescence
+    if (myAge > 3000.0) {
+      energyLoss += u_DeathRate * 0.05 * (myAge - 3000.0) / 3000.0;
+    }
+
+    // Isolation penalty
+    if (growth < 0.2) {
+      energyLoss += u_EnergyDecay * 0.5;
+    }
+
+    // Net energy change
+    myEnergy = clamp(myEnergy + energyGain - energyLoss, 0.0, 1.0);
+
+    // === STARVATION DEATH ===
+    if (myEnergy < 0.001) {
+      myEnergy = 0.0;
+    }
+
+    // === REPRODUCTION ===
+    if (myEnergy > 0.80 && foodConsumed > 0.001) {
+      float reproChance =
+          (myEnergy - 0.80) * 0.5 * min(foodConsumed * 10.0, 1.0);
+
+      if (random(i, 1) < reproChance) {
+        for (int j = 0; j < u_NumParticles; j++) {
+          float otherE = particlesIn[j * 15 + 6];
+          if (otherE < 0.01) {
+            int childBase = j * 15;
+
+            // Random direction in 3D (spherical)
+            float theta = random(i, 2) * 6.28318;        // azimuth
+            float phi = acos(2.0 * random(i, 3) - 1.0);  // polar
+            float spawnDist = 0.5 + random(i, 4) * 0.5;
+
+            vec3 spawnDir =
+                vec3(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));
+            vec3 childPos = wrapPos(myPos + spawnDir * spawnDist);
+
+            particlesOut[childBase + 0] = childPos.x;
+            particlesOut[childBase + 1] = childPos.y;
+            particlesOut[childBase + 2] = childPos.z;
+            particlesOut[childBase + 3] = myVel.x * 0.5;
+            particlesOut[childBase + 4] = myVel.y * 0.5;
+            particlesOut[childBase + 5] = myVel.z * 0.5;
+            particlesOut[childBase + 6] = 0.35;
+            particlesOut[childBase + 7] =
+                mySpecies + (random(i, 5) - 0.5) * 0.1;
+            particlesOut[childBase + 8] = 0.0;
+
+            for (int d = 0; d < 5; d++) {
+              float mut = (random(i, 6 + d) - 0.5) * u_MutationRate;
+              particlesOut[childBase + 9 + d] =
+                  clamp(myDna[d] + mut, -0.5, 0.5);
+            }
+            particlesOut[childBase + 14] = 0.0;  // Initial potential
+
+            myEnergy -= 0.35;
+            break;
+          }
+        }
+      }
+    }
+  }
+  
+  // Force high energy in fluid mode to prevent culling
+  if (u_FluidMode) {
+      myEnergy = 1.0;
+  }
+
+  // Write output (15 floats)
+  particlesOut[base + 0] = myPos.x;
+  particlesOut[base + 1] = myPos.y;
+  particlesOut[base + 2] = myPos.z;
+  particlesOut[base + 3] = myVel.x;
+  particlesOut[base + 4] = myVel.y;
+  particlesOut[base + 5] = myVel.z;
+  particlesOut[base + 6] = myEnergy;
+  particlesOut[base + 7] = mySpecies;
+  particlesOut[base + 8] = myAge;
+  for (int d = 0; d < 5; d++) {
+    particlesOut[base + 9 + d] = myDna[d];
+  }
+  particlesOut[base + 14] = UR_c.x;  // Potential field U for sonification
+}

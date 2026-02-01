@@ -1,0 +1,2 @@
+/usr/bin/ar qc libchronos_core.a CMakeFiles/chronos_core.dir/src/core/Buffer.cpp.o CMakeFiles/chronos_core.dir/src/core/Shader.cpp.o CMakeFiles/chronos_core.dir/src/core/ComputeShader.cpp.o CMakeFiles/chronos_core.dir/src/core/RenderShader.cpp.o
+/usr/bin/ranlib libchronos_core.a

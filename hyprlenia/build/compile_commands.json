@@ -1,0 +1,74 @@
+[
+{
+  "directory": "/home/junie/Projects/experiments/ichack26/chronos/build",
+  "command": "/usr/bin/cc  -I/home/junie/Projects/experiments/ichack26/chronos/include -I/home/junie/Projects/experiments/ichack26/chronos/src  -o CMakeFiles/glad.dir/src/glad.c.o -c /home/junie/Projects/experiments/ichack26/chronos/src/glad.c",
+  "file": "/home/junie/Projects/experiments/ichack26/chronos/src/glad.c",
+  "output": "CMakeFiles/glad.dir/src/glad.c.o"
+},
+{
+  "directory": "/home/junie/Projects/experiments/ichack26/chronos/build",
+  "command": "/usr/bin/c++  -I/home/junie/Projects/experiments/ichack26/chronos/include -I/home/junie/Projects/experiments/ichack26/chronos/src -std=gnu++17 -o CMakeFiles/imgui.dir/include/imgui/imgui.cpp.o -c /home/junie/Projects/experiments/ichack26/chronos/include/imgui/imgui.cpp",
+  "file": "/home/junie/Projects/experiments/ichack26/chronos/include/imgui/imgui.cpp",
+  "output": "CMakeFiles/imgui.dir/include/imgui/imgui.cpp.o"
+},
+{
+  "directory": "/home/junie/Projects/experiments/ichack26/chronos/build",
+  "command": "/usr/bin/c++  -I/home/junie/Projects/experiments/ichack26/chronos/include -I/home/junie/Projects/experiments/ichack26/chronos/src -std=gnu++17 -o CMakeFiles/imgui.dir/include/imgui/imgui_draw.cpp.o -c /home/junie/Projects/experiments/ichack26/chronos/include/imgui/imgui_draw.cpp",
+  "file": "/home/junie/Projects/experiments/ichack26/chronos/include/imgui/imgui_draw.cpp",
+  "output": "CMakeFiles/imgui.dir/include/imgui/imgui_draw.cpp.o"
+},
+{
+  "directory": "/home/junie/Projects/experiments/ichack26/chronos/build",
+  "command": "/usr/bin/c++  -I/home/junie/Projects/experiments/ichack26/chronos/include -I/home/junie/Projects/experiments/ichack26/chronos/src -std=gnu++17 -o CMakeFiles/imgui.dir/include/imgui/imgui_tables.cpp.o -c /home/junie/Projects/experiments/ichack26/chronos/include/imgui/imgui_tables.cpp",
+  "file": "/home/junie/Projects/experiments/ichack26/chronos/include/imgui/imgui_tables.cpp",
+  "output": "CMakeFiles/imgui.dir/include/imgui/imgui_tables.cpp.o"
+},
+{
+  "directory": "/home/junie/Projects/experiments/ichack26/chronos/build",
+  "command": "/usr/bin/c++  -I/home/junie/Projects/experiments/ichack26/chronos/include -I/home/junie/Projects/experiments/ichack26/chronos/src -std=gnu++17 -o CMakeFiles/imgui.dir/include/imgui/imgui_widgets.cpp.o -c /home/junie/Projects/experiments/ichack26/chronos/include/imgui/imgui_widgets.cpp",
+  "file": "/home/junie/Projects/experiments/ichack26/chronos/include/imgui/imgui_widgets.cpp",
+  "output": "CMakeFiles/imgui.dir/include/imgui/imgui_widgets.cpp.o"
+},
+{
+  "directory": "/home/junie/Projects/experiments/ichack26/chronos/build",
+  "command": "/usr/bin/c++  -I/home/junie/Projects/experiments/ichack26/chronos/include -I/home/junie/Projects/experiments/ichack26/chronos/src -std=gnu++17 -o CMakeFiles/imgui.dir/include/imgui/imgui_impl_glfw.cpp.o -c /home/junie/Projects/experiments/ichack26/chronos/include/imgui/imgui_impl_glfw.cpp",
+  "file": "/home/junie/Projects/experiments/ichack26/chronos/include/imgui/imgui_impl_glfw.cpp",
+  "output": "CMakeFiles/imgui.dir/include/imgui/imgui_impl_glfw.cpp.o"
+},
+{
+  "directory": "/home/junie/Projects/experiments/ichack26/chronos/build",
+  "command": "/usr/bin/c++  -I/home/junie/Projects/experiments/ichack26/chronos/include -I/home/junie/Projects/experiments/ichack26/chronos/src -std=gnu++17 -o CMakeFiles/imgui.dir/include/imgui/imgui_impl_opengl3.cpp.o -c /home/junie/Projects/experiments/ichack26/chronos/include/imgui/imgui_impl_opengl3.cpp",
+  "file": "/home/junie/Projects/experiments/ichack26/chronos/include/imgui/imgui_impl_opengl3.cpp",
+  "output": "CMakeFiles/imgui.dir/include/imgui/imgui_impl_opengl3.cpp.o"
+},
+{
+  "directory": "/home/junie/Projects/experiments/ichack26/chronos/build",
+  "command": "/usr/bin/c++  -I/home/junie/Projects/experiments/ichack26/chronos/include -I/home/junie/Projects/experiments/ichack26/chronos/src -std=gnu++17 -o CMakeFiles/chronos_core.dir/src/core/Buffer.cpp.o -c /home/junie/Projects/experiments/ichack26/chronos/src/core/Buffer.cpp",
+  "file": "/home/junie/Projects/experiments/ichack26/chronos/src/core/Buffer.cpp",
+  "output": "CMakeFiles/chronos_core.dir/src/core/Buffer.cpp.o"
+},
+{
+  "directory": "/home/junie/Projects/experiments/ichack26/chronos/build",
+  "command": "/usr/bin/c++  -I/home/junie/Projects/experiments/ichack26/chronos/include -I/home/junie/Projects/experiments/ichack26/chronos/src -std=gnu++17 -o CMakeFiles/chronos_core.dir/src/core/Shader.cpp.o -c /home/junie/Projects/experiments/ichack26/chronos/src/core/Shader.cpp",
+  "file": "/home/junie/Projects/experiments/ichack26/chronos/src/core/Shader.cpp",
+  "output": "CMakeFiles/chronos_core.dir/src/core/Shader.cpp.o"
+},
+{
+  "directory": "/home/junie/Projects/experiments/ichack26/chronos/build",
+  "command": "/usr/bin/c++  -I/home/junie/Projects/experiments/ichack26/chronos/include -I/home/junie/Projects/experiments/ichack26/chronos/src -std=gnu++17 -o CMakeFiles/chronos_core.dir/src/core/ComputeShader.cpp.o -c /home/junie/Projects/experiments/ichack26/chronos/src/core/ComputeShader.cpp",
+  "file": "/home/junie/Projects/experiments/ichack26/chronos/src/core/ComputeShader.cpp",
+  "output": "CMakeFiles/chronos_core.dir/src/core/ComputeShader.cpp.o"
+},
+{
+  "directory": "/home/junie/Projects/experiments/ichack26/chronos/build",
+  "command": "/usr/bin/c++  -I/home/junie/Projects/experiments/ichack26/chronos/include -I/home/junie/Projects/experiments/ichack26/chronos/src -std=gnu++17 -o CMakeFiles/chronos_core.dir/src/core/RenderShader.cpp.o -c /home/junie/Projects/experiments/ichack26/chronos/src/core/RenderShader.cpp",
+  "file": "/home/junie/Projects/experiments/ichack26/chronos/src/core/RenderShader.cpp",
+  "output": "CMakeFiles/chronos_core.dir/src/core/RenderShader.cpp.o"
+},
+{
+  "directory": "/home/junie/Projects/experiments/ichack26/chronos/build",
+  "command": "/usr/bin/c++  -I/home/junie/Projects/experiments/ichack26/chronos/include -I/home/junie/Projects/experiments/ichack26/chronos/src -std=gnu++17 -fopenmp -o CMakeFiles/particle_lenia.dir/src/particle_lenia/main.cpp.o -c /home/junie/Projects/experiments/ichack26/chronos/src/particle_lenia/main.cpp",
+  "file": "/home/junie/Projects/experiments/ichack26/chronos/src/particle_lenia/main.cpp",
+  "output": "CMakeFiles/particle_lenia.dir/src/particle_lenia/main.cpp.o"
+}
+]
