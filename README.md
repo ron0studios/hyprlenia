@@ -2,7 +2,7 @@
 
 **A hyper-optimised sandbox for real-time 3D emergent behaviour**
 
-![HyprLenia 3D particle simulation](hero.png)
+![HyprLenia 3D particle simulation](img/hero.png)
 
 ---
 
@@ -14,7 +14,7 @@ We define the laws of physics through mathematical functions: a sensing kernel, 
 
 The simulation runs entirely on the GPU. Tiled shared memory reduces global memory bandwidth by 128×. Spatial hashing drops complexity from O(N²) to O(N × k). The result: a responsive research tool where you can tweak parameters and immediately see how emergent behaviours change.
 
-![Particle simulation in action](simulation.gif)
+![Particle simulation in action](img/simulation.gif)
 
 ---
 
@@ -114,7 +114,7 @@ A Gaussian shell peaking at distance μ, not at the centre:
 
 $$K(r) = w_k \cdot \exp\left(-\frac{(r - \mu_k)^2}{\sigma_k^2}\right)$$
 
-![Gaussian shell kernel visualisation](sensing_kernel.png)
+![Gaussian shell kernel visualisation](img/sensing_kernel.png)
 
 ### Density Field U(x)
 
@@ -124,21 +124,21 @@ $$U(\mathbf{x}) = \sum_i K(\|\mathbf{x} - \mathbf{p}_i\|)$$
 
 $$G(U) = \exp\left(-\frac{(U - \mu_G)^2}{\sigma_G^2}\right)$$
 
-![Growth function](growth.png)
+![Growth function](img/growth.png)
 
 ### Repulsion R(r)
 
 $$R(r) = \frac{c_{rep}}{2} \cdot \max(1 - r, 0)^2$$
 
-![Repulsion function](repulsion.png)
+![Repulsion function](img/repulsion.png)
 
 ### Energy E(x)
 
 $$E(\mathbf{x}) = R(\mathbf{x}) - G(U(\mathbf{x}))$$
 
-![Energy landscape](energy_landscape.png)
+![Energy landscape](img/energy_landscape.png)
 
-![Combined energy field of multiple particles](combined_energy.png)
+![Combined energy field of multiple particles](img/combined_energy.png)
 
 ### Update Rule
 
