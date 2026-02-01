@@ -1,1 +1,0 @@
-/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/particle_lenia.dir/link.d CMakeFiles/particle_lenia.dir/src/particle_lenia/main.cpp.o -o particle_lenia  libchronos_core.a libimgui.a libglad.a /usr/lib/libglfw.so.3.4 -lm /usr/lib/libGLX.so /usr/lib/libOpenGL.so /usr/lib/libgomp.so /usr/lib/libpthread.a
