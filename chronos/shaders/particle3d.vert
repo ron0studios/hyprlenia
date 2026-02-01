@@ -4,13 +4,14 @@
  * 3D Particle Vertex Shader
  *
  * Renders particles as point sprites positioned in true 3D space.
- * Particle layout (14 floats):
+ * Particle layout (15 floats):
  *   0-2: position (x, y, z)
  *   3-5: velocity (vx, vy, vz)
  *   6: energy
  *   7: species
  *   8: age
  *   9-13: dna[5]
+ *   14: potential (U field)
  */
 
 layout(std430, binding = 0) readonly buffer Particles {
@@ -33,10 +34,10 @@ out float vEnergy;
 out float vSpecies;
 out vec3 vWorldPos;
 
-// Particle data accessors (14 floats per particle)
-#define READ_PARTICLE_POS(i) vec3(particles[(i) * 14], particles[(i) * 14 + 1], particles[(i) * 14 + 2])
-#define READ_PARTICLE_ENERGY(i) particles[(i) * 14 + 6]
-#define READ_PARTICLE_SPECIES(i) particles[(i) * 14 + 7]
+// Particle data accessors (15 floats per particle)
+#define READ_PARTICLE_POS(i) vec3(particles[(i) * 15], particles[(i) * 15 + 1], particles[(i) * 15 + 2])
+#define READ_PARTICLE_ENERGY(i) particles[(i) * 15 + 6]
+#define READ_PARTICLE_SPECIES(i) particles[(i) * 15 + 7]
 
 void main() {
     int idx = gl_VertexID;
