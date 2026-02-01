@@ -1,4 +1,4 @@
-#version 460 core
+#version 450 core
 
 /*
  * 3D Particle Fragment Shader
@@ -15,20 +15,15 @@ out vec4 FragColor;
 uniform vec3 u_CameraPos;
 uniform float u_Time;
 
-// Channel-based coloring for multi-channel Lenia
-vec3 channelColor(float channel, float energy) {
-    // Channel 0: Blue/Cyan spectrum
-    // Channel 1: Orange/Red spectrum
-    vec3 baseColor;
-    if (channel < 0.5) {
-        // Channel 0: Cool blue
-        baseColor = vec3(0.2, 0.5, 1.0);
-    } else {
-        // Channel 1: Warm orange
-        baseColor = vec3(1.0, 0.4, 0.15);
-    }
-    // Brighten based on energy
-    return baseColor * (0.5 + energy * 0.5);
+// HSL to RGB
+vec3 hsl2rgb(vec3 c) {
+    vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+    return c.z + c.y * (rgb - 0.5) * (1.0 - abs(2.0 * c.z - 1.0));
+}
+
+vec3 speciesColor(float species, float energy) {
+    float hue = mod(species * 0.3, 1.0);
+    return hsl2rgb(vec3(hue, 0.7 + energy * 0.3, 0.4 + energy * 0.4));
 }
 
 void main() {
@@ -49,8 +44,8 @@ void main() {
     float sphere = 1.0 - dist;
     sphere = pow(sphere, 1.5);
     
-    // Color based on channel and energy
-    vec3 color = channelColor(vSpecies, vEnergy);
+    // Color based on species and energy
+    vec3 color = speciesColor(vSpecies, vEnergy);
     
     // Glow effect
     float glow = exp(-dist * 2.0) * vEnergy;

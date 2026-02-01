@@ -27,6 +27,11 @@
 #include "core/Buffer.h"
 #include "core/ComputeShader.h"
 #include "core/RenderShader.h"
+#include "headless/HeadlessRenderer.h"
+#include "headless/VideoEncoder.h"
+
+#include <cstring>
+#include <string>
 
 // Window dimensions
 int WINDOW_WIDTH = 1200;
@@ -96,47 +101,6 @@ struct SimulationParams {
   bool showWireframe = false;     // Show terrain wireframe
   float ambientLight = 0.5f;      // Ambient lighting (higher for visibility)
   float particleSize = 20.0f;     // 3D particle size
-
-  // Multi-channel parameters
-  int interactionPreset = 0;  // 0=Independent, 1=Predator-Prey, 2=Symbiosis, 3=Competition
-
-  // Per-channel kernel parameters [channel 0, channel 1]
-  float mu_k_ch[2] = {4.0f, 4.0f};
-  float sigma_k2_ch[2] = {1.0f, 1.0f};
-
-  // Per-channel growth parameters
-  float mu_g_ch[2] = {0.6f, 0.6f};
-  float sigma_g2_ch[2] = {0.0225f, 0.0225f};
-
-  // Cross-channel interaction matrix [from][to]
-  // interaction[i][j] = how much channel i's kernel affects channel j's growth
-  float interaction[4] = {1.0f, 0.0f, 0.0f, 1.0f};  // Default: independent (flattened 2x2)
-
-  // Apply interaction preset
-  void applyPreset() {
-    switch (interactionPreset) {
-      case 0:  // Independent - channels don't interact
-        interaction[0] = 1.0f; interaction[1] = 0.0f;
-        interaction[2] = 0.0f; interaction[3] = 1.0f;
-        mu_g_ch[0] = 0.6f; mu_g_ch[1] = 0.6f;
-        break;
-      case 1:  // Predator-Prey - A flees B, B chases A
-        interaction[0] = 1.0f;  interaction[1] = -0.8f;  // A: helped by A, hurt by B
-        interaction[2] = 0.5f;  interaction[3] = 1.0f;   // B: helped by A, helped by B
-        mu_g_ch[0] = 0.4f; mu_g_ch[1] = 0.8f;  // Prey sparse, predator dense
-        break;
-      case 2:  // Symbiosis - both benefit from proximity
-        interaction[0] = 0.7f; interaction[1] = 0.5f;
-        interaction[2] = 0.5f; interaction[3] = 0.7f;
-        mu_g_ch[0] = 0.6f; mu_g_ch[1] = 0.6f;
-        break;
-      case 3:  // Competition - mutual inhibition
-        interaction[0] = 1.0f;  interaction[1] = -0.6f;
-        interaction[2] = -0.6f; interaction[3] = 1.0f;
-        mu_g_ch[0] = 0.6f; mu_g_ch[1] = 0.6f;
-        break;
-    }
-  }
 };
 
 // Particle structure (must match shader) - 14 floats total
@@ -148,6 +112,30 @@ struct Particle {
   float age;          // Age in simulation steps
   float dna[5];       // Genetic parameters (mu_k, sigma_k2, mu_g, sigma_g2, c_rep
                       // variations)
+};
+
+// Headless mode configuration
+struct HeadlessConfig {
+  bool enabled = false;
+  std::string outputPath = "output.mp4";
+  int width = 1920;
+  int height = 1080;
+  int fps = 30;
+  int durationSeconds = 60;
+  int stepsPerFrame = 5;
+  int bitrate = 8000000;  // 8 Mbps
+
+  // Simulation params
+  int numParticles = 500;
+  bool evolutionEnabled = false;
+  float energyDecay = 0.001f;
+  float energyFromGrowth = 0.01f;
+
+  // Camera params (static)
+  float cameraAngle = 45.0f;
+  float cameraRotation = 0.0f;
+  float cameraDistance = 60.0f;
+  float particleSize = 20.0f;
 };
 
 constexpr int PARTICLE_FLOATS = 14;  // Number of floats per particle
@@ -345,7 +333,7 @@ class ParticleLeniaSimulation {
                                                      params.worldHeight / 2.0f);
       std::uniform_real_distribution<float> posDistZ(-params.worldDepth / 2.0f,
                                                      params.worldDepth / 2.0f);
-      std::uniform_int_distribution<int> channelDist(0, 1);  // Channel 0 or 1
+      std::uniform_real_distribution<float> speciesDist(0.0f, 3.0f);
       std::uniform_real_distribution<float> dnaDist(-0.2f, 0.2f);
 
       #pragma omp for
@@ -362,8 +350,8 @@ class ParticleLeniaSimulation {
           data[base + 5] = 0.0f;
           // Energy
           data[base + 6] = 1.0f;
-          // Channel (0 or 1) - stored in species slot
-          data[base + 7] = static_cast<float>(channelDist(localRng));
+          // Species
+          data[base + 7] = speciesDist(localRng);
           // Age
           data[base + 8] = 0.0f;
           // DNA (5 values)
@@ -446,13 +434,6 @@ class ParticleLeniaSimulation {
     // Food system uniforms
     stepShader.setUniform("u_FoodGridSize", foodGridSize);
     stepShader.setUniform("u_FoodConsumptionRadius", params.foodConsumptionRadius);
-
-    // Multi-channel uniforms
-    stepShader.setUniform("u_MuK_Ch", params.mu_k_ch, 2);
-    stepShader.setUniform("u_SigmaK2_Ch", params.sigma_k2_ch, 2);
-    stepShader.setUniform("u_MuG_Ch", params.mu_g_ch, 2);
-    stepShader.setUniform("u_SigmaG2_Ch", params.sigma_g2_ch, 2);
-    stepShader.setUniform("u_Interaction", params.interaction, 4);
 
     // Random seed for evolution
     static int frame = 0;
@@ -642,7 +623,7 @@ class ParticleLeniaSimulation {
     for (int i = 0; i < params.maxParticles; i++) {
       int base = i * PARTICLE_FLOATS;
       if (data[base + 6] < 0.01f) {  // Dead particle (energy at index 6)
-        std::uniform_int_distribution<int> channelDist(0, 1);
+        std::uniform_real_distribution<float> speciesDist(0.0f, 3.0f);
         std::uniform_real_distribution<float> dnaDist(-0.2f, 0.2f);
 
         data[base + 0] = x;                 // x
@@ -652,7 +633,7 @@ class ParticleLeniaSimulation {
         data[base + 4] = 0.0f;              // vy
         data[base + 5] = 0.0f;              // vz
         data[base + 6] = 1.0f;              // energy
-        data[base + 7] = static_cast<float>(channelDist(rng));  // channel (0 or 1)
+        data[base + 7] = speciesDist(rng);  // species
         data[base + 8] = 0.0f;              // age
         for (int d = 0; d < 5; d++) {
           data[base + 9 + d] = dnaDist(rng);
@@ -860,10 +841,10 @@ void renderUI() {
   // === FOOD SYSTEM ===
   if (ImGui::CollapsingHeader("Food System", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("Enable Food", &simulation.params.foodEnabled);
-
+    
     if (simulation.params.foodEnabled) {
       ImGui::Checkbox("Show Food", &simulation.params.showFood);
-
+      
       ImGui::Spacing();
       ImGui::TextDisabled("Food Dynamics");
       ImGui::DragFloat("Spawn Rate", &simulation.params.foodSpawnRate,
@@ -874,57 +855,6 @@ void renderUI() {
                        0.1f, 0.1f, 5.0f);
       ImGui::DragFloat("Consumption Radius", &simulation.params.foodConsumptionRadius,
                        0.1f, 0.5f, 10.0f);
-    }
-  }
-
-  // === MULTI-CHANNEL ===
-  if (ImGui::CollapsingHeader("Multi-Channel Dynamics", ImGuiTreeNodeFlags_DefaultOpen)) {
-    ImGui::TextColored(ImVec4(0.2f, 0.5f, 1.0f, 1.0f), "Channel A (Blue)");
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.15f, 1.0f), "Channel B (Orange)");
-
-    ImGui::Spacing();
-    const char* presets[] = {"Independent", "Predator-Prey", "Symbiosis", "Competition"};
-    if (ImGui::Combo("Interaction Preset", &simulation.params.interactionPreset, presets, 4)) {
-      simulation.params.applyPreset();
-    }
-
-    ImGui::Spacing();
-    ImGui::TextDisabled("Preset Descriptions:");
-    switch (simulation.params.interactionPreset) {
-      case 0:
-        ImGui::TextWrapped("Independent: Channels ignore each other, standard Lenia behavior.");
-        break;
-      case 1:
-        ImGui::TextWrapped("Predator-Prey: Orange chases Blue, Blue flees Orange.");
-        break;
-      case 2:
-        ImGui::TextWrapped("Symbiosis: Both channels benefit from proximity to each other.");
-        break;
-      case 3:
-        ImGui::TextWrapped("Competition: Channels inhibit each other, forming territories.");
-        break;
-    }
-
-    // Advanced: show interaction matrix
-    if (ImGui::TreeNode("Advanced Parameters")) {
-      ImGui::TextDisabled("Interaction Matrix [from -> to]");
-      ImGui::Text("A->A: %.2f  A->B: %.2f",
-                  simulation.params.interaction[0], simulation.params.interaction[1]);
-      ImGui::Text("B->A: %.2f  B->B: %.2f",
-                  simulation.params.interaction[2], simulation.params.interaction[3]);
-
-      ImGui::Spacing();
-      ImGui::TextDisabled("Channel A (Blue) Parameters");
-      ImGui::DragFloat("A: Kernel Peak##A", &simulation.params.mu_k_ch[0], 0.1f, 0.5f, 20.0f);
-      ImGui::DragFloat("A: Growth Target##A", &simulation.params.mu_g_ch[0], 0.01f, 0.0f, 2.0f);
-
-      ImGui::Spacing();
-      ImGui::TextDisabled("Channel B (Orange) Parameters");
-      ImGui::DragFloat("B: Kernel Peak##B", &simulation.params.mu_k_ch[1], 0.1f, 0.5f, 20.0f);
-      ImGui::DragFloat("B: Growth Target##B", &simulation.params.mu_g_ch[1], 0.01f, 0.0f, 2.0f);
-
-      ImGui::TreePop();
     }
   }
 
@@ -963,7 +893,221 @@ void renderUI() {
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
-int main() {
+// Print usage for headless mode
+void printUsage(const char* programName) {
+  std::cout << "Usage: " << programName << " [OPTIONS]\n\n"
+            << "Interactive mode (default):\n"
+            << "  Run with GUI and real-time controls.\n\n"
+            << "Headless mode:\n"
+            << "  --headless              Enable headless rendering (no display)\n"
+            << "  --output FILE           Output video file (default: output.mp4)\n"
+            << "  --width N               Video width (default: 1920)\n"
+            << "  --height N              Video height (default: 1080)\n"
+            << "  --fps N                 Frames per second (default: 30)\n"
+            << "  --duration N            Duration in seconds (default: 60)\n"
+            << "  --steps-per-frame N     Simulation steps per frame (default: 5)\n"
+            << "  --bitrate N             Video bitrate in bps (default: 8000000)\n"
+            << "  --particles N           Number of particles (default: 500)\n"
+            << "  --evolution             Enable evolution system\n"
+            << "  --energy-decay F        Energy decay rate (default: 0.001)\n"
+            << "  --energy-gain F         Energy gain rate (default: 0.01)\n"
+            << "  --camera-angle F        Camera angle in degrees (default: 45)\n"
+            << "  --camera-rotation F     Camera rotation in degrees (default: 0)\n"
+            << "  --camera-distance F     Camera distance (default: 60)\n"
+            << "  --particle-size F       Particle size (default: 20)\n"
+            << "  --help                  Show this help message\n\n"
+            << "Example:\n"
+            << "  " << programName << " --headless --output sim.mp4 --duration 30 --particles 1000 --evolution\n";
+}
+
+// Parse command line arguments
+HeadlessConfig parseArgs(int argc, char** argv) {
+  HeadlessConfig config;
+
+  for (int i = 1; i < argc; i++) {
+    std::string arg = argv[i];
+
+    if (arg == "--headless") {
+      config.enabled = true;
+    } else if (arg == "--help" || arg == "-h") {
+      printUsage(argv[0]);
+      exit(0);
+    } else if (arg == "--output" && i + 1 < argc) {
+      config.outputPath = argv[++i];
+    } else if (arg == "--width" && i + 1 < argc) {
+      config.width = std::stoi(argv[++i]);
+    } else if (arg == "--height" && i + 1 < argc) {
+      config.height = std::stoi(argv[++i]);
+    } else if (arg == "--fps" && i + 1 < argc) {
+      config.fps = std::stoi(argv[++i]);
+    } else if (arg == "--duration" && i + 1 < argc) {
+      config.durationSeconds = std::stoi(argv[++i]);
+    } else if (arg == "--steps-per-frame" && i + 1 < argc) {
+      config.stepsPerFrame = std::stoi(argv[++i]);
+    } else if (arg == "--bitrate" && i + 1 < argc) {
+      config.bitrate = std::stoi(argv[++i]);
+    } else if (arg == "--particles" && i + 1 < argc) {
+      config.numParticles = std::stoi(argv[++i]);
+    } else if (arg == "--evolution") {
+      config.evolutionEnabled = true;
+    } else if (arg == "--energy-decay" && i + 1 < argc) {
+      config.energyDecay = std::stof(argv[++i]);
+    } else if (arg == "--energy-gain" && i + 1 < argc) {
+      config.energyFromGrowth = std::stof(argv[++i]);
+    } else if (arg == "--camera-angle" && i + 1 < argc) {
+      config.cameraAngle = std::stof(argv[++i]);
+    } else if (arg == "--camera-rotation" && i + 1 < argc) {
+      config.cameraRotation = std::stof(argv[++i]);
+    } else if (arg == "--camera-distance" && i + 1 < argc) {
+      config.cameraDistance = std::stof(argv[++i]);
+    } else if (arg == "--particle-size" && i + 1 < argc) {
+      config.particleSize = std::stof(argv[++i]);
+    } else {
+      std::cerr << "Unknown argument: " << arg << std::endl;
+      printUsage(argv[0]);
+      exit(1);
+    }
+  }
+
+  return config;
+}
+
+// Run simulation in headless mode
+int runHeadless(const HeadlessConfig& config) {
+  std::cout << "=== CHRONOS Headless Mode ===" << std::endl;
+  std::cout << "Output: " << config.outputPath << std::endl;
+  std::cout << "Resolution: " << config.width << "x" << config.height << std::endl;
+  std::cout << "Duration: " << config.durationSeconds << " seconds @ " << config.fps << " fps" << std::endl;
+  std::cout << "Particles: " << config.numParticles << std::endl;
+  std::cout << "Evolution: " << (config.evolutionEnabled ? "enabled" : "disabled") << std::endl;
+  std::cout << std::endl;
+
+  // Initialize headless renderer
+  HeadlessRenderer renderer;
+  if (!renderer.init(config.width, config.height)) {
+    std::cerr << "Failed to initialize headless renderer" << std::endl;
+    return 1;
+  }
+
+  // Configure simulation parameters
+  simulation.params.numParticles = config.numParticles;
+  simulation.params.maxParticles = std::max(config.numParticles * 2, 2000);
+  simulation.params.evolutionEnabled = config.evolutionEnabled;
+  simulation.params.energyDecay = config.energyDecay;
+  simulation.params.energyFromGrowth = config.energyFromGrowth;
+  simulation.params.stepsPerFrame = config.stepsPerFrame;
+  simulation.params.cameraAngle = config.cameraAngle;
+  simulation.params.cameraRotation = config.cameraRotation;
+  simulation.params.cameraDistance = config.cameraDistance;
+  simulation.params.particleSize = config.particleSize;
+  simulation.params.view3D = true;
+
+  // Initialize simulation
+  simulation.init();
+
+  // Initialize video encoder
+  VideoEncoder encoder;
+  if (!encoder.open(config.outputPath, config.width, config.height, config.fps, config.bitrate)) {
+    std::cerr << "Failed to open video encoder" << std::endl;
+    return 1;
+  }
+
+  // Pixel buffer for frame capture
+  std::vector<uint8_t> pixels;
+  int totalFrames = config.fps * config.durationSeconds;
+
+  std::cout << "Rendering " << totalFrames << " frames..." << std::endl;
+
+  // Debug: save first frame as PPM to check rendering
+  auto saveDebugFrame = [&](const std::vector<uint8_t>& pixels, const char* filename) {
+    FILE* f = fopen(filename, "wb");
+    if (f) {
+      fprintf(f, "P6\n%d %d\n255\n", config.width, config.height);
+      fwrite(pixels.data(), 1, pixels.size(), f);
+      fclose(f);
+      std::cout << "Debug frame saved to: " << filename << std::endl;
+    }
+  };
+
+  for (int frame = 0; frame < totalFrames; frame++) {
+    // Step simulation
+    for (int i = 0; i < config.stepsPerFrame; i++) {
+      simulation.step();
+    }
+
+    // Render to FBO
+    glBindFramebuffer(GL_FRAMEBUFFER, renderer.fbo());
+    glViewport(0, 0, config.width, config.height);
+    glClearColor(0.01f, 0.03f, 0.06f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    simulation.display3D(config.width, config.height);
+
+    // Check for GL errors
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR && frame == 0) {
+      std::cerr << "GL error after display3D: " << err << std::endl;
+    }
+
+    // Ensure rendering completes before reading
+    glFinish();
+
+    // Read pixels and encode (keeps FBO bound)
+    renderer.readPixels(pixels);
+
+    // Save first frame for debugging
+    if (frame == 0) {
+      saveDebugFrame(pixels, "debug_frame.ppm");
+      // Check if any non-black pixels
+      int nonBlack = 0;
+      for (size_t i = 0; i < pixels.size(); i += 3) {
+        if (pixels[i] > 5 || pixels[i+1] > 5 || pixels[i+2] > 5) {
+          nonBlack++;
+        }
+      }
+      std::cout << "Non-black pixels: " << nonBlack << " / " << (config.width * config.height) << std::endl;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (!encoder.writeFrame(pixels.data())) {
+      std::cerr << "Failed to encode frame " << frame << std::endl;
+      break;
+    }
+
+    // Progress indicator (every second)
+    if (frame % config.fps == 0) {
+      int seconds = frame / config.fps;
+      int percent = (frame * 100) / totalFrames;
+      std::cout << "\rProgress: " << seconds << "/" << config.durationSeconds
+                << " seconds (" << percent << "%)" << std::flush;
+    }
+
+    // Update stats periodically
+    if (frame % (config.fps * 5) == 0) {
+      simulation.updateStats();
+    }
+  }
+
+  std::cout << "\rProgress: " << config.durationSeconds << "/" << config.durationSeconds
+            << " seconds (100%)" << std::endl;
+
+  encoder.close();
+  renderer.cleanup();
+
+  std::cout << "\nVideo saved to: " << config.outputPath << std::endl;
+  return 0;
+}
+
+int main(int argc, char** argv) {
+  // Parse command line arguments
+  HeadlessConfig headlessConfig = parseArgs(argc, argv);
+
+  // Run in headless mode if requested
+  if (headlessConfig.enabled) {
+    return runHeadless(headlessConfig);
+  }
+
+  // Otherwise, run interactive mode
   // Initialize GLFW
   if (!glfwInit()) {
     std::cerr << "Failed to initialize GLFW" << std::endl;

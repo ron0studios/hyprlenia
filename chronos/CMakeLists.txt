@@ -9,6 +9,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(OpenGL REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(OpenMP REQUIRED)
+find_package(PkgConfig REQUIRED)
+
+# Headless rendering dependencies
+pkg_check_modules(EGL REQUIRED egl)
+pkg_check_modules(GBM REQUIRED gbm)
+
+# FFmpeg for video encoding
+pkg_check_modules(FFMPEG REQUIRED libavcodec libavformat libswscale libavutil)
 
 # GLAD library
 add_library(glad src/glad.c)
@@ -40,12 +48,30 @@ add_library(chronos_core
 )
 target_include_directories(chronos_core PUBLIC ${PROJECT_SOURCE_DIR}/src)
 
+# Headless rendering and video encoding library
+add_library(chronos_headless
+    src/headless/HeadlessRenderer.cpp
+    src/headless/VideoEncoder.cpp
+)
+target_include_directories(chronos_headless PUBLIC
+    ${PROJECT_SOURCE_DIR}/src
+    ${EGL_INCLUDE_DIRS}
+    ${GBM_INCLUDE_DIRS}
+    ${FFMPEG_INCLUDE_DIRS}
+)
+target_link_libraries(chronos_headless
+    ${EGL_LIBRARIES}
+    ${GBM_LIBRARIES}
+    ${FFMPEG_LIBRARIES}
+)
+
 # Main executable - Particle Lenia with Evolution
 add_executable(particle_lenia
     src/particle_lenia/main.cpp
 )
 target_link_libraries(particle_lenia
     chronos_core
+    chronos_headless
     imgui
     glad
     glfw
