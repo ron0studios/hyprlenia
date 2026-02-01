@@ -1061,6 +1061,8 @@ class ParticleLeniaSimulation {
     particle3DShader.setUniform("u_TranslateZ", params.translateZ);
     particle3DShader.setUniform("u_Zoom", params.zoom);
     particle3DShader.setUniform("u_CameraPos", camX, camY, camZ);
+    particle3DShader.setUniform("u_MuG", params.mu_g);
+    particle3DShader.setUniform("u_SigmaG2", params.sigma_g2);
 
     
     glBindVertexArray(particleVAO);  
