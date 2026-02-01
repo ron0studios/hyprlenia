@@ -1,18 +1,6 @@
 #version 460 core
 
-/*
- * 3D Particle Vertex Shader
- *
- * Renders particles as point sprites positioned in true 3D space.
- * Particle layout (15 floats):
- *   0-2: position (x, y, z)
- *   3-5: velocity (vx, vy, vz)
- *   6: energy
- *   7: species
- *   8: age
- *   9-13: dna[5]
- *   14: potential (U field)
- */
+ 
 
 layout(std430, binding = 0) readonly buffer Particles {
     float particles[];
@@ -34,7 +22,7 @@ out float vEnergy;
 out float vSpecies;
 out vec3 vWorldPos;
 
-// Particle data accessors (15 floats per particle)
+
 #define READ_PARTICLE_POS(i) vec3(particles[(i) * 15], particles[(i) * 15 + 1], particles[(i) * 15 + 2])
 #define READ_PARTICLE_ENERGY(i) particles[(i) * 15 + 6]
 #define READ_PARTICLE_SPECIES(i) particles[(i) * 15 + 7]
@@ -42,29 +30,29 @@ out vec3 vWorldPos;
 void main() {
     int idx = gl_VertexID;
 
-    // Read 3D position directly
+    
     vec3 pos = READ_PARTICLE_POS(idx);
     vEnergy = READ_PARTICLE_ENERGY(idx);
     vSpecies = READ_PARTICLE_SPECIES(idx);
 
-    // Skip dead particles
+    
     if (vEnergy < 0.01) {
         gl_Position = vec4(-1000.0, -1000.0, -1000.0, 1.0);
         gl_PointSize = 0.0;
         return;
     }
 
-    // Apply view transform (zoom and translation)
+    
     vec3 viewPos = pos / u_Zoom - vec3(u_TranslateX, u_TranslateY, u_TranslateZ);
 
-    // World position for fragment shader (Y is up in OpenGL)
-    // Map: simulation (x,y,z) -> rendering (x, z, -y) so Y becomes up
+    
+    
     vec3 worldPos = vec3(viewPos.x, viewPos.z, -viewPos.y);
     vWorldPos = worldPos;
 
     gl_Position = u_ViewProjection * vec4(worldPos, 1.0);
 
-    // Point size based on distance from camera and energy
+    
     float dist = length(u_CameraPos - worldPos);
     gl_PointSize = u_ParticleSize * vEnergy / (dist * 0.05 + 1.0);
 }

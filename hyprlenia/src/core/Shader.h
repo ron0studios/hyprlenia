@@ -15,7 +15,7 @@ class Shader {
 
   void use() const;
 
-  // Uniform binding methods
+  
   void setUniform(const std::string& name, int value) const;
   void setUniform(const std::string& name, float value) const;
   void setUniform(const std::string& name, bool value) const;
@@ -38,4 +38,4 @@ class Shader {
   void checkLinkErrors(GLuint program);
 };
 
-#endif  // CHRONOS_SHADER_H
+#endif  

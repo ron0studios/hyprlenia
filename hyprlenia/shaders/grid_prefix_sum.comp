@@ -1,26 +1,18 @@
 #version 460 core
 
-/*
- * PASS 2: PREFIX SUM - Convert counts to offsets
- *
- * Uses Blelloch scan algorithm for work-efficient parallel prefix sum.
- * After this pass, each cell knows its starting index in the sorted buffer.
- *
- * This is a simplified single-workgroup version for grids up to 2048 cells.
- * For larger grids, use a multi-pass approach.
- */
+ 
 
 layout(local_size_x = 512) in;
 
 layout(std430, binding = 0) buffer GridCounters {
-  uint counters[];  // Input: counts, Output: exclusive prefix sum (offsets)
+  uint counters[];  
 };
 
 layout(std430, binding = 1) buffer GridOffsets {
-  uint offsets[];  // Copy of offsets for the reorder pass
+  uint offsets[];  
 };
 
-shared uint temp[1024];  // Shared memory for the scan
+shared uint temp[1024];  
 
 uniform int u_NumCells;
 
@@ -28,10 +20,10 @@ void main() {
   uint tid = gl_LocalInvocationID.x;
   uint n = uint(u_NumCells);
 
-  // Handle grids larger than workgroup size with multiple iterations
+  
   uint offset = 1u;
 
-  // Load two elements per thread
+  
   uint ai = tid;
   uint bi = tid + 512u;
 
@@ -45,7 +37,7 @@ void main() {
   else
     temp[bi] = 0u;
 
-  // Build sum in place (up-sweep)
+  
   for (uint d = 512u; d > 0u; d >>= 1u) {
     barrier();
     if (tid < d) {
@@ -58,13 +50,13 @@ void main() {
     offset *= 2u;
   }
 
-  // Clear the last element
+  
   barrier();
   if (tid == 0u) {
     temp[1023] = 0u;
   }
 
-  // Down-sweep
+  
   for (uint d = 1u; d < 1024u; d *= 2u) {
     offset >>= 1u;
     barrier();
@@ -81,10 +73,10 @@ void main() {
 
   barrier();
 
-  // Write results
+  
   if (ai < n) {
     counters[ai] = temp[ai];
-    offsets[ai] = temp[ai];  // Copy for reorder pass
+    offsets[ai] = temp[ai];  
   }
   if (bi < n) {
     counters[bi] = temp[bi];

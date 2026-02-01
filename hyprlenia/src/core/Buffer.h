@@ -30,4 +30,4 @@ class Buffer {
   bool m_initialized;
 };
 
-#endif  // CHRONOS_BUFFER_H
+#endif  

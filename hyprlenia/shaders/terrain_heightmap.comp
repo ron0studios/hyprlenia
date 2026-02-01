@@ -1,12 +1,6 @@
 #version 460 core
 
-/*
- * Terrain Heightmap Generator
- * 
- * Computes a heightmap from particle field density.
- * Uses a lower resolution for performance (e.g., 128x128).
- * Applies smoothing for a nice visual appearance.
- */
+ 
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
@@ -28,7 +22,7 @@ uniform float u_Wk;
 #define READ_PARTICLE_ENERGY(i) particles[(i) * 12 + 4]
 #define READ_PARTICLE_SPECIES(i) particles[(i) * 12 + 5]
 
-// Wrapped distance for toroidal world
+
 float wrappedDist(vec2 pos1, vec2 pos2) {
     vec2 d = pos2 - pos1;
     float halfW = u_WorldWidth * 0.5;
@@ -44,14 +38,14 @@ void main() {
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
     if (texel.x >= u_HeightmapSize || texel.y >= u_HeightmapSize) return;
     
-    // Map texel to world position
+    
     vec2 uv = (vec2(texel) + 0.5) / float(u_HeightmapSize);
     vec2 worldPos = vec2(
         (uv.x - 0.5) * u_WorldWidth,
         (uv.y - 0.5) * u_WorldHeight
     );
     
-    // Compute field density at this position
+    
     float density = 0.0;
     float closestDist = 1000.0;
     float closestEnergy = 0.0;
@@ -60,7 +54,7 @@ void main() {
     float cutoff = u_MuK + 3.0 * sqrt(u_SigmaK2);
     float invSigmaK2 = 1.0 / u_SigmaK2;
     
-    // Sample particles (with step for performance)
+    
     int step = max(1, u_NumParticles / 500);
     
     for (int i = 0; i < u_NumParticles; i += step) {
@@ -83,13 +77,13 @@ void main() {
         }
     }
     
-    // Height based on density with soft falloff (normalized 0-1)
+    
     float height = min(density * 2.0, 1.0);
     
-    // Add particle proximity contribution
+    
     float particleHeight = exp(-closestDist * 2.0) * closestEnergy * 0.5;
     height = min(height + particleHeight, 1.0);
     
-    // Store: R = height, G = density, B = closest species, A = closest energy
+    
     imageStore(u_Heightmap, texel, vec4(height, density, closestSpecies / 3.0, closestEnergy));
 }

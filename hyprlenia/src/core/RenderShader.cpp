@@ -20,7 +20,7 @@ RenderShader::RenderShader(const std::string& vertexPath,
       m_ebo(0) {}
 
 void RenderShader::init() {
-  // Read and compile shaders
+  
   std::string vertexSource = readFile(m_vertexPath);
   std::string fragmentSource = readFile(m_fragmentPath);
 
@@ -41,8 +41,8 @@ void RenderShader::init() {
   glDeleteShader(vertexShader);
   glDeleteShader(fragmentShader);
 
-  // Setup fullscreen quad
-  float vertices[] = {// positions        // texcoords
+  
+  float vertices[] = {
                       1.0f, 1.0f,  0.0f, 1.0f,  1.0f,  1.0f, -1.0f,
                       0.0f, 1.0f,  0.0f, -1.0f, -1.0f, 0.0f, 0.0f,
                       0.0f, -1.0f, 1.0f, 0.0f,  0.0f,  1.0f};
@@ -62,11 +62,11 @@ void RenderShader::init() {
   glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices,
                GL_STATIC_DRAW);
 
-  // Position attribute
+  
   glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
   glEnableVertexAttribArray(0);
 
-  // TexCoord attribute
+  
   glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
                         (void*)(3 * sizeof(float)));
   glEnableVertexAttribArray(1);

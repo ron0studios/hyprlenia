@@ -24,4 +24,4 @@ class RenderShader : public Shader {
   GLuint m_ebo;
 };
 
-#endif  // CHRONOS_RENDER_SHADER_H
+#endif  

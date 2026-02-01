@@ -1,15 +1,4 @@
-/*
- * CHRONOS - Particle Lenia with Evolution
- *
- * An advanced cellular automata simulation featuring:
- * - Particle-based Lenia (continuous game of life)
- * - Multiple species with different parameters
- * - Evolution: particles can reproduce, mutate, and die
- * - Survival mechanics: energy, predation, competition
- *
- * Based on:
- * https://google-research.github.io/self-organising-systems/particle-lenia/
- */
+ 
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -37,126 +26,126 @@
 #include "core/ComputeShader.h"
 #include "core/RenderShader.h"
 
-// Window dimensions
+
 int WINDOW_WIDTH = 1200;
 int WINDOW_HEIGHT = 900;
 
-// Simulation parameters
+
 struct SimulationParams {
-  // World dimensions (3D cube)
+  
   float worldWidth = 40.0f;
   float worldHeight = 40.0f;
   float worldDepth = 40.0f;
 
-  // Particle count
+  
   int numParticles = 500;
   int maxParticles = 2000;
 
-  // Kernel parameters - controls sensing/interaction range
-  float w_k = 0.022f;     // Kernel weight
-  float mu_k = 4.0f;      // Kernel peak distance
-  float sigma_k2 = 1.0f;  // Kernel width squared
+  
+  float w_k = 0.022f;     
+  float mu_k = 4.0f;      
+  float sigma_k2 = 1.0f;  
 
-  // Growth parameters - the "Lenia magic"
-  float mu_g = 0.6f;         // Optimal density (growth center)
-  float sigma_g2 = 0.0225f;  // Growth width squared
+  
+  float mu_g = 0.6f;         
+  float sigma_g2 = 0.0225f;  
 
-  // Repulsion parameters
-  float c_rep = 1.0f;  // Repulsion strength
+  
+  float c_rep = 1.0f;  
 
-  // Time integration
-  float dt = 0.1f;  // Time step
-  float h = 0.01f;  // Gradient calculation distance
+  
+  float dt = 0.1f;  
+  float h = 0.01f;  
 
-  // Evolution parameters (disabled by default for stability)
+  
   bool evolutionEnabled = false;
-  float birthRate = 0.001f;        // Chance to reproduce per step
-  float deathRate = 0.0f;          // Base death rate (0 = no random death)
-  float mutationRate = 0.1f;       // Mutation strength
-  float energyDecay = 0.0f;        // Energy loss per step (0 = no decay)
-  float energyFromGrowth = 0.01f;  // Energy gained from good growth
+  float birthRate = 0.001f;        
+  float deathRate = 0.0f;          
+  float mutationRate = 0.1f;       
+  float energyDecay = 0.0f;        
+  float energyFromGrowth = 0.01f;  
 
-  // View parameters
+  
   float translateX = 0.0f;
   float translateY = 0.0f;
   float translateZ = 0.0f;
   float zoom = 1.0f;
 
-  // Rendering
+  
   int stepsPerFrame = 5;
   bool showFields = true;
-  int fieldType = 3;  // 0=none, 1=U, 2=R, 3=G, 4=E
+  int fieldType = 3;  
 
-  // Food system parameters
+  
   bool foodEnabled = true;
   float foodSpawnRate =
-      0.002f;  // Probability of food spawning per cell per step
-  float foodDecayRate = 0.001f;        // How fast food decays naturally
-  float foodMaxAmount = 1.0f;          // Maximum food per cell
-  float foodConsumptionRadius = 2.0f;  // How far particles can reach to eat
-  bool showFood = true;                // Show food on display
+      0.002f;  
+  float foodDecayRate = 0.001f;        
+  float foodMaxAmount = 1.0f;          
+  float foodConsumptionRadius = 2.0f;  
+  bool showFood = true;                
 
-  // 3D Rendering
-  bool view3D = true;            // Default to 3D mode
-  float cameraAngle = 45.0f;     // Degrees from horizontal
-  float cameraRotation = 0.0f;   // Rotation around Y axis
-  float cameraDistance = 60.0f;  // Distance from center
-  float heightScale = 10.0f;     // Height multiplier for terrain
-  float glowIntensity = 1.5f;    // Glow effect strength
-  bool showWireframe = false;    // Show terrain wireframe
-  float ambientLight = 0.5f;     // Ambient lighting (higher for visibility)
-  float particleSize = 20.0f;    // 3D particle size
+  
+  bool view3D = true;            
+  float cameraAngle = 45.0f;     
+  float cameraRotation = 0.0f;   
+  float cameraDistance = 60.0f;  
+  float heightScale = 10.0f;     
+  float glowIntensity = 1.5f;    
+  bool showWireframe = false;    
+  float ambientLight = 0.5f;     
+  float particleSize = 20.0f;    
 
-  // Interaction
+  
   int interactionMode =
-      0;  // 0=None, 1=Spawn, 2=Repel, 3=Attract, 4=Spawn Orbium
+      0;  
   float brushRadius = 5.0f;
   float forceStrength = 0.5f;
 
-  // Goal System
-  int goalMode = 0;  // 0=None, 1=Circle, 2=Box, 3=Text, 4=Image
+  
+  int goalMode = 0;  
   float goalStrength = 0.1f;
   char goalImagePath[256] = "goal.bmp";
 
-  // Render settings
+  
   bool showGoal = false;
 
-  // Sonification parameters
+  
   bool sonificationEnabled = false;
   float audioVolume = 0.3f;
-  float minFrequency = 80.0f;    // Hz (bass)
-  float maxFrequency = 800.0f;   // Hz (treble)
-  int maxVoices = 32;            // Number of particles to sonify
+  float minFrequency = 80.0f;    
+  float maxFrequency = 800.0f;   
+  int maxVoices = 32;            
 };
 
-// Particle structure (must match shader) - 15 floats total
+
 struct Particle {
-  float x, y, z;     // Position (3D)
-  float vx, vy, vz;  // Velocity (3D)
-  float energy;      // Health/energy [0, 1]
-  float species;     // Species ID (affects color)
-  float age;         // Age in simulation steps
-  float dna[5];  // Genetic parameters (mu_k, sigma_k2, mu_g, sigma_g2, c_rep
-                 // variations)
-  float potential;   // U field value (for sonification)
+  float x, y, z;     
+  float vx, vy, vz;  
+  float energy;      
+  float species;     
+  float age;         
+  float dna[5];  
+                 
+  float potential;   
 };
 
-constexpr int PARTICLE_FLOATS = 15;  // Number of floats per particle
+constexpr int PARTICLE_FLOATS = 15;  
 
-// ============================================================================
-// SONIFICATION SYSTEM
-// Based on: https://google-research.github.io/self-organising-systems/particle-lenia/
-// Each particle gets a voice with:
-// - Frequency based on potential energy (U field)
-// - Volume based on particle speed
-// ============================================================================
+
+
+
+
+
+
+
 
 struct AudioVoice {
-  float frequency = 220.0f;   // Current frequency (Hz)
-  float amplitude = 0.0f;     // Current volume [0, 1]
-  float phase = 0.0f;         // Oscillator phase
-  float targetFreq = 220.0f;  // Target frequency (for smoothing)
-  float targetAmp = 0.0f;     // Target amplitude (for smoothing)
+  float frequency = 220.0f;   
+  float amplitude = 0.0f;     
+  float phase = 0.0f;         
+  float targetFreq = 220.0f;  
+  float targetAmp = 0.0f;     
 };
 
 struct AudioState {
@@ -178,7 +167,7 @@ struct AudioState {
 
 AudioState g_audio;
 
-// Audio callback - generates samples in real-time
+
 void audioCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
   (void)pInput;
 
@@ -190,33 +179,33 @@ void audioCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uin
   }
 
   const float sampleRate = static_cast<float>(pDevice->sampleRate);
-  const float smoothing = 0.995f;  // Smooth frequency/amplitude changes
+  const float smoothing = 0.995f;  
 
   for (ma_uint32 i = 0; i < frameCount; i++) {
     float sample = 0.0f;
 
-    // Mix all voices
+    
     for (int v = 0; v < g_audio.numVoices; v++) {
       AudioVoice& voice = g_audio.voices[v];
 
-      // Smooth transitions
+      
       voice.frequency = voice.frequency * smoothing + voice.targetFreq * (1.0f - smoothing);
       voice.amplitude = voice.amplitude * smoothing + voice.targetAmp * (1.0f - smoothing);
 
       if (voice.amplitude > 0.001f) {
-        // Sine wave oscillator
+        
         float sine = std::sin(voice.phase * 2.0f * 3.14159265f);
         sample += sine * voice.amplitude;
 
-        // Advance phase
+        
         voice.phase += voice.frequency / sampleRate;
         if (voice.phase >= 1.0f) voice.phase -= 1.0f;
       }
     }
 
-    // Apply master volume and soft clipping
+    
     sample *= g_audio.masterVolume / static_cast<float>(std::max(1, g_audio.numVoices / 4));
-    sample = std::tanh(sample);  // Soft clip
+    sample = std::tanh(sample);  
 
     output[i] = sample;
   }
@@ -255,7 +244,7 @@ void shutdownAudio() {
   }
 }
 
-// Update audio voices from particle data
+
 void updateAudioFromParticles(const std::vector<float>& particleData, int maxParticles,
                                float minFreq, float maxFreq, float volume) {
   if (!g_audio.initialized) return;
@@ -264,7 +253,7 @@ void updateAudioFromParticles(const std::vector<float>& particleData, int maxPar
   g_audio.maxFreq = maxFreq;
   g_audio.masterVolume = volume;
 
-  // Find the most "interesting" particles (highest energy + activity)
+  
   struct ParticleScore {
     int index;
     float score;
@@ -277,25 +266,25 @@ void updateAudioFromParticles(const std::vector<float>& particleData, int maxPar
     float energy = particleData[base + 6];
     if (energy < 0.01f) continue;
 
-    // Speed from velocity
+    
     float vx = particleData[base + 3];
     float vy = particleData[base + 4];
     float vz = particleData[base + 5];
     float speed = std::sqrt(vx*vx + vy*vy + vz*vz);
 
-    // Potential field (U)
+    
     float potential = particleData[base + 14];
 
-    // Score by energy and activity
+    
     float score = energy * (1.0f + speed * 0.5f + potential * 0.3f);
     scores.push_back({i, score});
   }
 
-  // Sort by score (descending)
+  
   std::sort(scores.begin(), scores.end(),
             [](const ParticleScore& a, const ParticleScore& b) { return a.score > b.score; });
 
-  // Update voices with top particles
+  
   int numVoices = std::min(g_audio.numVoices, static_cast<int>(scores.size()));
 
   for (int v = 0; v < AudioState::MAX_VOICES; v++) {
@@ -310,24 +299,24 @@ void updateAudioFromParticles(const std::vector<float>& particleData, int maxPar
       float speed = std::sqrt(vx*vx + vy*vy + vz*vz);
       float potential = particleData[base + 14];
 
-      // Map potential to frequency (log scale for musical feel)
-      // Potential typically ranges from 0 to ~2
+      
+      
       float t = std::clamp(potential / 2.0f, 0.0f, 1.0f);
       float freq = minFreq * std::pow(maxFreq / minFreq, t);
 
-      // Map speed to amplitude
+      
       float amp = std::clamp(speed * 2.0f, 0.0f, 1.0f) * energy;
 
       g_audio.voices[v].targetFreq = freq;
       g_audio.voices[v].targetAmp = amp;
     } else {
-      // Fade out unused voices
+      
       g_audio.voices[v].targetAmp = 0.0f;
     }
   }
 }
 
-// ============================================================================
+
 
 class ParticleLeniaSimulation {
  public:
@@ -340,7 +329,7 @@ class ParticleLeniaSimulation {
   ComputeShader stepShader;
   RenderShader displayShader;
 
-  // 3D Rendering resources
+  
   ComputeShader heightmapShader;
   RenderShader terrainShader;
   RenderShader particle3DShader;
@@ -348,36 +337,36 @@ class ParticleLeniaSimulation {
   GLuint terrainVAO = 0;
   GLuint terrainVBO = 0;
   GLuint terrainEBO = 0;
-  GLuint particleVAO = 0;  // Empty VAO for particle rendering with gl_VertexID
-  int terrainGridSize = 128;  // 128x128 grid for terrain
+  GLuint particleVAO = 0;  
+  int terrainGridSize = 128;  
   int terrainIndexCount = 0;
 
-  // Food system resources
+  
   ComputeShader foodUpdateShader;
   GLuint foodTexture = 0;
-  int foodGridSize = 128;  // 128x128 food grid
+  int foodGridSize = 128;  
 
-  // Goal system resources
+  
   GLuint goalTexture = 0;
   int goalGridSize = 512;
 
   std::mt19937 rng;
 
-  // Stats
+  
   int aliveCount = 0;
   float avgEnergy = 0.0f;
   float avgAge = 0.0f;
   
-  // History
+  
   std::vector<float> historyAlive;
   std::vector<float> historyEnergy;
   const size_t historyMaxSize = 300;
 
   void init() {
-    // Initialize RNG
+    
     rng = std::mt19937(std::random_device{}());
 
-    // Calculate buffer size: each particle has 14 floats (3D)
+    
     int bufferSize = params.maxParticles * PARTICLE_FLOATS;
 
     particleBufferA = Buffer(bufferSize, GL_SHADER_STORAGE_BUFFER);
@@ -386,10 +375,10 @@ class ParticleLeniaSimulation {
     particleBufferA.init();
     particleBufferB.init();
 
-    // Initialize particles
+    
     resetParticles();
 
-    // Load shaders
+    
     stepShader = ComputeShader("shaders/particle_lenia_step.comp");
     stepShader.init();
 
@@ -397,13 +386,13 @@ class ParticleLeniaSimulation {
                                  "shaders/particle_lenia_display.frag");
     displayShader.init();
 
-    // Initialize 3D rendering
+    
     init3D();
 
-    // Initialize food system
+    
     initFood();
 
-    // Initialize goal system
+    
     initGoal();
   }
 
@@ -446,7 +435,7 @@ class ParticleLeniaSimulation {
     for (int y = 0; y < size; y++) {
       for (int x = 0; x < size; x++) {
         int srcX = x * width / size;
-        int srcY = (size - 1 - y) * height / size;  // Flip Y for GL
+        int srcY = (size - 1 - y) * height / size;  
         if (srcX >= width) srcX = width - 1;
         if (srcY >= height) srcY = height - 1;
         int idx = (srcY * width + srcX) * 3;
@@ -463,7 +452,7 @@ class ParticleLeniaSimulation {
   void updateGoalTexture() {
     std::vector<float> data(goalGridSize * goalGridSize, 0.0f);
 
-    if (params.goalMode == 1) {  // Circle
+    if (params.goalMode == 1) {  
       float cx = goalGridSize / 2.0f;
       float cy = goalGridSize / 2.0f;
       float r = goalGridSize * 0.3f;
@@ -479,7 +468,7 @@ class ParticleLeniaSimulation {
           data[y * goalGridSize + x] = val;
         }
       }
-    } else if (params.goalMode == 2) {  // Box
+    } else if (params.goalMode == 2) {  
       float margin = goalGridSize * 0.2f;
 #pragma omp parallel for collapse(2)
       for (int y = 0; y < goalGridSize; y++) {
@@ -494,8 +483,8 @@ class ParticleLeniaSimulation {
           }
         }
       }
-    } else if (params.goalMode == 3) {  // Text "HI"
-      // Simple pixel drawing
+    } else if (params.goalMode == 3) {  
+      
       int w = goalGridSize;
       auto drawRect = [&](int x, int y, int rw, int rh) {
         for (int iy = y; iy < y + rh; iy++) {
@@ -506,17 +495,17 @@ class ParticleLeniaSimulation {
         }
       };
 
-      int s = w / 10;  // scale
+      int s = w / 10;  
       int thick = s / 2;
-      // H
+      
       drawRect(2 * s, 3 * s, thick, 4 * s);
       drawRect(4 * s, 3 * s, thick, 4 * s);
       drawRect(2 * s, 5 * s, 2 * s + thick, thick);
-      // I
+      
       drawRect(6 * s, 3 * s, thick, 4 * s);
-    } else if (params.goalMode == 4) {  // Image
+    } else if (params.goalMode == 4) {  
       if (!loadBMP(params.goalImagePath, data, goalGridSize)) {
-// Fallback X pattern
+
 #pragma omp parallel for collapse(2)
         for (int y = 0; y < goalGridSize; y++) {
           for (int x = 0; x < goalGridSize; x++) {
@@ -662,16 +651,16 @@ class ParticleLeniaSimulation {
         }
     }
     std::cout << "Scene loaded from " << filename << std::endl;
-    // Reinitialize to apply parameters
+    
     init();
   }
 
   void initFood() {
-    // Load food update shader
+    
     foodUpdateShader = ComputeShader("shaders/food_update.comp");
     foodUpdateShader.init();
 
-    // Create food texture (RGBA16F: R=food amount, G=freshness)
+    
     glGenTextures(1, &foodTexture);
     glBindTexture(GL_TEXTURE_2D, foodTexture);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, foodGridSize, foodGridSize, 0,
@@ -681,7 +670,7 @@ class ParticleLeniaSimulation {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
-    // Initialize food texture with some random food
+    
     std::vector<float> foodData(foodGridSize * foodGridSize * 4, 0.0f);
     int totalCells = foodGridSize * foodGridSize;
 
@@ -692,9 +681,9 @@ class ParticleLeniaSimulation {
 
 #pragma omp for
       for (int i = 0; i < totalCells; i++) {
-        if (dist(localRng) < 0.1f) {  // 10% initial food coverage
-          foodData[i * 4 + 0] = dist(localRng) * 0.5f;  // Food amount
-          foodData[i * 4 + 1] = 1.0f;                   // Freshness
+        if (dist(localRng) < 0.1f) {  
+          foodData[i * 4 + 0] = dist(localRng) * 0.5f;  
+          foodData[i * 4 + 1] = 1.0f;                   
         }
       }
     }
@@ -704,7 +693,7 @@ class ParticleLeniaSimulation {
   }
 
   void init3D() {
-    // Load 3D shaders
+    
     heightmapShader = ComputeShader("shaders/terrain_heightmap.comp");
     heightmapShader.init();
 
@@ -716,7 +705,7 @@ class ParticleLeniaSimulation {
         RenderShader("shaders/particle3d.vert", "shaders/particle3d.frag");
     particle3DShader.init();
 
-    // Create heightmap texture
+    
     glGenTextures(1, &heightmapTexture);
     glBindTexture(GL_TEXTURE_2D, heightmapTexture);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, terrainGridSize, terrainGridSize,
@@ -726,7 +715,7 @@ class ParticleLeniaSimulation {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    // Create terrain mesh grid
+    
     std::vector<float> vertices;
     std::vector<unsigned int> indices;
 
@@ -777,18 +766,18 @@ class ParticleLeniaSimulation {
 
     glBindVertexArray(0);
 
-    // Create empty VAO for particle rendering (uses gl_VertexID)
+    
     glGenVertexArrays(1, &particleVAO);
   }
 
   void resetParticles() {
-    // Spawn particles uniformly in the 3D world bounds
+    
     std::vector<float> data(params.maxParticles * PARTICLE_FLOATS);
 
-// Parallel initialization with thread-local RNGs
+
 #pragma omp parallel
     {
-      // Each thread gets its own RNG seeded uniquely
+      
       std::mt19937 localRng(std::random_device{}() + omp_get_thread_num());
       std::uniform_real_distribution<float> posDistX(-params.worldWidth / 2.0f,
                                                      params.worldWidth / 2.0f);
@@ -803,26 +792,26 @@ class ParticleLeniaSimulation {
       for (int i = 0; i < params.maxParticles; i++) {
         int base = i * PARTICLE_FLOATS;
         if (i < params.numParticles) {
-          // Position (3D)
+          
           data[base + 0] = posDistX(localRng);
           data[base + 1] = posDistY(localRng);
           data[base + 2] = posDistZ(localRng);
-          // Velocity (3D)
+          
           data[base + 3] = 0.0f;
           data[base + 4] = 0.0f;
           data[base + 5] = 0.0f;
-          // Energy
+          
           data[base + 6] = 1.0f;
-          // Species
+          
           data[base + 7] = speciesDist(localRng);
-          // Age
+          
           data[base + 8] = 0.0f;
-          // DNA (5 values)
+          
           for (int d = 0; d < 5; d++) {
             data[base + 9 + d] = dnaDist(localRng);
           }
         } else {
-          // Dead/inactive particle (14 floats all zero)
+          
           for (int j = 0; j < PARTICLE_FLOATS; j++) {
             data[base + j] = 0.0f;
           }
@@ -839,15 +828,15 @@ class ParticleLeniaSimulation {
     Buffer& readBuffer = useBufferA ? particleBufferA : particleBufferB;
     Buffer& writeBuffer = useBufferA ? particleBufferB : particleBufferA;
 
-    // === STEP 1: Update food (spawn + decay) ===
+    
     if (params.foodEnabled) {
       foodUpdateShader.use();
 
-      // Bind food texture for read/write
+      
       glBindImageTexture(0, foodTexture, 0, GL_FALSE, 0, GL_READ_WRITE,
                          GL_RGBA16F);
 
-      // Set uniforms
+      
       static int foodFrame = 0;
       foodUpdateShader.setUniform("u_FoodGridSize", foodGridSize);
       foodUpdateShader.setUniform("u_FoodSpawnRate", params.foodSpawnRate);
@@ -855,34 +844,34 @@ class ParticleLeniaSimulation {
       foodUpdateShader.setUniform("u_FoodMaxAmount", params.foodMaxAmount);
       foodUpdateShader.setUniform("u_RandomSeed", foodFrame++);
 
-      // Dispatch (16x16 work groups)
+      
       int foodWorkGroupsX = (foodGridSize + 15) / 16;
       int foodWorkGroupsY = (foodGridSize + 15) / 16;
       foodUpdateShader.dispatch(foodWorkGroupsX, foodWorkGroupsY, 1);
       foodUpdateShader.wait();
     }
 
-    // === STEP 2: Update particles ===
+    
     stepShader.use();
 
-    // Bind buffers
+    
     stepShader.bindBuffer("ParticlesIn", readBuffer, 0);
     stepShader.bindBuffer("ParticlesOut", writeBuffer, 1);
 
-    // Bind food texture for read/write (particles consume food)
+    
     if (params.foodEnabled) {
       glBindImageTexture(0, foodTexture, 0, GL_FALSE, 0, GL_READ_WRITE,
                          GL_RGBA16F);
     }
 
-    // Bind Goal Texture
+    
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, goalTexture);
     stepShader.setUniform("u_GoalTexture", 1);
     stepShader.setUniform("u_GoalMode", params.goalMode);
     stepShader.setUniform("u_GoalStrength", params.goalStrength);
 
-    // Bind uniforms
+    
     stepShader.setUniform("u_NumParticles", params.maxParticles);
     stepShader.setUniform("u_AliveCount", aliveCount);
     stepShader.setUniform("u_WorldWidth", params.worldWidth);
@@ -903,16 +892,16 @@ class ParticleLeniaSimulation {
     stepShader.setUniform("u_EnergyDecay", params.energyDecay);
     stepShader.setUniform("u_EnergyFromGrowth", params.energyFromGrowth);
 
-    // Food system uniforms
+    
     stepShader.setUniform("u_FoodGridSize", foodGridSize);
     stepShader.setUniform("u_FoodConsumptionRadius",
                           params.foodConsumptionRadius);
 
-    // Random seed for evolution
+    
     static int frame = 0;
     stepShader.setUniform("u_RandomSeed", frame++);
 
-    // Dispatch compute shader (128 threads per workgroup)
+    
     int workGroups = (params.maxParticles + 127) / 128;
     stepShader.dispatch(workGroups, 1, 1);
     stepShader.wait();
@@ -926,7 +915,7 @@ class ParticleLeniaSimulation {
     displayShader.use();
     displayShader.bindBuffer("Particles", activeBuffer, 0);
 
-    // Bind food texture for display
+    
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, foodTexture);
     displayShader.setUniform("u_FoodTexture", 0);
@@ -956,11 +945,11 @@ class ParticleLeniaSimulation {
   void display3D(int windowWidth, int windowHeight) {
     Buffer& activeBuffer = useBufferA ? particleBufferA : particleBufferB;
 
-    // === Build camera matrices ===
+    
     float aspect =
         static_cast<float>(windowWidth) / static_cast<float>(windowHeight);
 
-    // Camera orbit around center
+    
     float camRadius = params.cameraDistance;
     float camAngleRad = params.cameraAngle * 3.14159f / 180.0f;
     float camRotRad = params.cameraRotation * 3.14159f / 180.0f;
@@ -969,12 +958,12 @@ class ParticleLeniaSimulation {
     float camY = camRadius * std::sin(camAngleRad);
     float camZ = camRadius * std::sin(camRotRad) * std::cos(camAngleRad);
 
-    // Simple view matrix (look at origin)
+    
     float eye[3] = {camX, camY, camZ};
     float target[3] = {0.0f, 0.0f, 0.0f};
     float up[3] = {0.0f, 1.0f, 0.0f};
 
-    // Forward, right, up vectors
+    
     float fwd[3] = {target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]};
     float fwdLen =
         std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
@@ -995,7 +984,7 @@ class ParticleLeniaSimulation {
                       right[2] * fwd[0] - right[0] * fwd[2],
                       right[0] * fwd[1] - right[1] * fwd[0]};
 
-    // View matrix (column-major for OpenGL)
+    
     float view[16] = {
         right[0],
         upVec[0],
@@ -1014,7 +1003,7 @@ class ParticleLeniaSimulation {
         (fwd[0] * eye[0] + fwd[1] * eye[1] + fwd[2] * eye[2]),
         1.0f};
 
-    // Perspective projection
+    
     float fov = 60.0f * 3.14159f / 180.0f;
     float nearPlane = 0.1f;
     float farPlane = 500.0f;
@@ -1037,7 +1026,7 @@ class ParticleLeniaSimulation {
                       -(2.0f * farPlane * nearPlane) / (farPlane - nearPlane),
                       0.0f};
 
-    // Multiply view * proj -> viewProj (manual matrix multiply)
+    
     float viewProj[16];
     for (int i = 0; i < 4; i++) {
       for (int j = 0; j < 4; j++) {
@@ -1048,14 +1037,14 @@ class ParticleLeniaSimulation {
       }
     }
 
-    // Enable depth testing
+    
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     glClear(GL_DEPTH_BUFFER_BIT);
 
-    // === Render 3D particles ===
+    
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE);  // Additive blending for glow
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);  
     glEnable(GL_PROGRAM_POINT_SIZE);
 
     particle3DShader.use();
@@ -1073,8 +1062,8 @@ class ParticleLeniaSimulation {
     particle3DShader.setUniform("u_Zoom", params.zoom);
     particle3DShader.setUniform("u_CameraPos", camX, camY, camZ);
 
-    // Render particles as points
-    glBindVertexArray(particleVAO);  // Empty VAO, using gl_VertexID
+    
+    glBindVertexArray(particleVAO);  
     glDrawArrays(GL_POINTS, 0, params.maxParticles);
     glBindVertexArray(0);
 
@@ -1094,8 +1083,8 @@ class ParticleLeniaSimulation {
 #pragma omp parallel for reduction(+ : localAliveCount, totalEnergy, totalAge)
     for (int i = 0; i < params.maxParticles; i++) {
       int base = i * PARTICLE_FLOATS;
-      float energy = data[base + 6];  // Energy is now at index 6
-      float age = data[base + 8];     // Age is now at index 8
+      float energy = data[base + 6];  
+      float age = data[base + 8];     
 
       if (energy > 0.01f) {
         localAliveCount++;
@@ -1108,7 +1097,7 @@ class ParticleLeniaSimulation {
     avgEnergy = aliveCount > 0 ? totalEnergy / aliveCount : 0.0f;
     avgAge = aliveCount > 0 ? totalAge / aliveCount : 0.0f;
     
-    // Update History
+    
     historyAlive.push_back((float)aliveCount);
     if (historyAlive.size() > historyMaxSize) historyAlive.erase(historyAlive.begin());
     
@@ -1120,28 +1109,28 @@ class ParticleLeniaSimulation {
     Buffer& activeBuffer = useBufferA ? particleBufferA : particleBufferB;
     std::vector<float> data = activeBuffer.getData();
 
-    // Find a dead slot
+    
     for (int i = 0; i < params.maxParticles; i++) {
       int base = i * PARTICLE_FLOATS;
-      if (data[base + 6] < 0.01f) {  // Dead particle (energy at index 6)
+      if (data[base + 6] < 0.01f) {  
         std::uniform_real_distribution<float> speciesDist(0.0f, 3.0f);
         std::uniform_real_distribution<float> dnaDist(-0.2f, 0.2f);
 
-        data[base + 0] = x;                 // x
-        data[base + 1] = y;                 // y
-        data[base + 2] = z;                 // z
-        data[base + 3] = 0.0f;              // vx
-        data[base + 4] = 0.0f;              // vy
-        data[base + 5] = 0.0f;              // vz
-        data[base + 6] = 1.0f;              // energy
-        data[base + 7] = speciesDist(rng);  // species
-        data[base + 8] = 0.0f;              // age
+        data[base + 0] = x;                 
+        data[base + 1] = y;                 
+        data[base + 2] = z;                 
+        data[base + 3] = 0.0f;              
+        data[base + 4] = 0.0f;              
+        data[base + 5] = 0.0f;              
+        data[base + 6] = 1.0f;              
+        data[base + 7] = speciesDist(rng);  
+        data[base + 8] = 0.0f;              
         for (int d = 0; d < 5; d++) {
           data[base + 9 + d] = dnaDist(rng);
         }
 
         activeBuffer.setData(data);
-        // Also update the other buffer
+        
         Buffer& otherBuffer = useBufferA ? particleBufferB : particleBufferA;
         otherBuffer.setData(data);
 
@@ -1152,7 +1141,7 @@ class ParticleLeniaSimulation {
   }
 
   void spawnOrbium(float x, float y, float z) {
-    // Spawn a cluster of particles that should form a soliton
+    
     int count = 40;
     float radius = 3.0f;
 
@@ -1191,7 +1180,7 @@ class ParticleLeniaSimulation {
   }
 };
 
-// Global simulation
+
 ParticleLeniaSimulation simulation;
 bool paused = false;
 
@@ -1206,7 +1195,7 @@ void processInput(GLFWwindow* window) {
     glfwSetWindowShouldClose(window, true);
   }
 
-  // Camera rotation with WASD
+  
   float rotSpeed = 2.0f;
   float angleSpeed = 1.0f;
 
@@ -1227,7 +1216,7 @@ void processInput(GLFWwindow* window) {
         std::fmod(simulation.params.cameraRotation + rotSpeed, 360.0f);
   }
 
-  // Zoom with Q/E
+  
   float zoomSpeed = 1.0f;
   if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
     simulation.params.cameraDistance =
@@ -1245,18 +1234,18 @@ ImVec2 screenToWorld(float screenX, float screenY) {
   float worldAspect =
       simulation.params.worldWidth / simulation.params.worldHeight;
 
-  // Normalized UV coordinates [-1, 1]
+  
   float uvX = (screenX / WINDOW_WIDTH - 0.5f) * 2.0f;
   float uvY = ((1.0f - screenY / WINDOW_HEIGHT) - 0.5f) * 2.0f;
 
-  // Apply aspect ratio correction (same as shader)
+  
   if (windowAspect > worldAspect) {
     uvX *= windowAspect / worldAspect;
   } else {
     uvY *= worldAspect / windowAspect;
   }
 
-  // UV is [-1, 1], multiply by half world size to get world coords
+  
   float worldX =
       uvX * (simulation.params.worldWidth * 0.5f) / simulation.params.zoom +
       simulation.params.translateX;
@@ -1266,38 +1255,38 @@ ImVec2 screenToWorld(float screenX, float screenY) {
   return ImVec2(worldX, worldY);
 }
 
-// Draw the Chronos icon (3 connected circles representing particle interaction)
+
 void drawChronosIcon(ImVec2 pos, float size) {
   ImDrawList* draw = ImGui::GetWindowDrawList();
 
-  // Scale factor (original SVG is 100x100)
+  
   float s = size / 100.0f;
 
-  // Circle colors from SVG
-  ImU32 blue   = IM_COL32(52, 152, 219, 255);   // #3498db
-  ImU32 orange = IM_COL32(230, 126, 34, 255);   // #e67e22
-  ImU32 green  = IM_COL32(46, 204, 113, 255);   // #2ecc71
-  ImU32 gray   = IM_COL32(85, 85, 85, 255);     // #555
+  
+  ImU32 blue   = IM_COL32(52, 152, 219, 255);   
+  ImU32 orange = IM_COL32(230, 126, 34, 255);   
+  ImU32 green  = IM_COL32(46, 204, 113, 255);   
+  ImU32 gray   = IM_COL32(85, 85, 85, 255);     
 
-  // Circle positions (from SVG)
-  ImVec2 c1(pos.x + 30*s, pos.y + 30*s);  // Blue - top left
-  ImVec2 c2(pos.x + 70*s, pos.y + 30*s);  // Orange - top right
-  ImVec2 c3(pos.x + 50*s, pos.y + 70*s);  // Green - bottom
-  float r = 12*s;  // Circle radius
+  
+  ImVec2 c1(pos.x + 30*s, pos.y + 30*s);  
+  ImVec2 c2(pos.x + 70*s, pos.y + 30*s);  
+  ImVec2 c3(pos.x + 50*s, pos.y + 70*s);  
+  float r = 12*s;  
 
-  // Draw circles
+  
   draw->AddCircleFilled(c1, r, blue, 24);
   draw->AddCircleFilled(c2, r, orange, 24);
   draw->AddCircleFilled(c3, r, green, 24);
 
-  // Draw curved arrows (simplified as lines with arrowheads)
+  
   float lineWidth = 2.5f * s;
 
-  // Arrow 1: Blue -> Orange (top)
+  
   ImVec2 a1_start(pos.x + 42*s, pos.y + 25*s);
   ImVec2 a1_end(pos.x + 58*s, pos.y + 25*s);
   draw->AddLine(a1_start, a1_end, gray, lineWidth);
-  // Arrowhead
+  
   draw->AddTriangleFilled(
     ImVec2(a1_end.x + 4*s, a1_end.y),
     ImVec2(a1_end.x - 3*s, a1_end.y - 4*s),
@@ -1305,11 +1294,11 @@ void drawChronosIcon(ImVec2 pos, float size) {
     gray
   );
 
-  // Arrow 2: Orange -> Green (right side)
+  
   ImVec2 a2_start(pos.x + 72*s, pos.y + 44*s);
   ImVec2 a2_end(pos.x + 62*s, pos.y + 60*s);
   draw->AddLine(a2_start, a2_end, gray, lineWidth);
-  // Arrowhead
+  
   draw->AddTriangleFilled(
     ImVec2(a2_end.x - 2*s, a2_end.y + 5*s),
     ImVec2(a2_end.x + 5*s, a2_end.y - 2*s),
@@ -1317,11 +1306,11 @@ void drawChronosIcon(ImVec2 pos, float size) {
     gray
   );
 
-  // Arrow 3: Green -> Blue (left side)
+  
   ImVec2 a3_start(pos.x + 40*s, pos.y + 60*s);
   ImVec2 a3_end(pos.x + 32*s, pos.y + 44*s);
   draw->AddLine(a3_start, a3_end, gray, lineWidth);
-  // Arrowhead
+  
   draw->AddTriangleFilled(
     ImVec2(a3_end.x - 2*s, a3_end.y - 5*s),
     ImVec2(a3_end.x - 5*s, a3_end.y + 2*s),
@@ -1335,7 +1324,7 @@ void renderUI() {
   ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
 
-  // === CUSTOM GREY THEME ===
+  
   ImGuiStyle& style = ImGui::GetStyle();
   style.Colors[ImGuiCol_Text] = ImVec4(0.90f, 0.90f, 0.90f, 1.00f);
   style.Colors[ImGuiCol_WindowBg] = ImVec4(0.12f, 0.12f, 0.12f, 1.00f);
@@ -1357,20 +1346,20 @@ void renderUI() {
   ImGuiIO& io = ImGui::GetIO();
   float topBarHeight = 60.0f;
 
-  // === TOP BAR ===
+  
   ImGui::SetNextWindowPos(ImVec2(0, 0));
   ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, topBarHeight));
   ImGui::Begin("TopBar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar);
 
-  // Draw icon in top-left
+  
   float iconSize = 50.0f;
   ImVec2 iconPos = ImGui::GetCursorScreenPos();
-  iconPos.y += (topBarHeight - iconSize) * 0.5f - 5.0f;  // Vertically center
+  iconPos.y += (topBarHeight - iconSize) * 0.5f - 5.0f;  
   drawChronosIcon(iconPos, iconSize);
-  ImGui::Dummy(ImVec2(iconSize + 10, 0));  // Reserve space for icon
+  ImGui::Dummy(ImVec2(iconSize + 10, 0));  
   ImGui::SameLine();
 
-  // Play/Pause
+  
   if (paused) {
       if (ImGui::Button(" PLAY ", ImVec2(0, 30))) paused = !paused;
   } else {
@@ -1378,13 +1367,13 @@ void renderUI() {
   }
   ImGui::SameLine();
   
-  // Reinit
+  
   if (ImGui::Button("Restart", ImVec2(0, 30))) {
     simulation.resetParticles();
   }
   ImGui::SameLine();
   
-  // Scene I/O
+  
   static char sceneFilename[128] = "scene.txt";
   ImGui::PushItemWidth(150);
   ImGui::InputText("##file", sceneFilename, 128);
@@ -1396,7 +1385,7 @@ void renderUI() {
   
   ImGui::SameLine(); ImGui::Text(" | "); ImGui::SameLine();
   
-  // Speed
+  
   ImGui::Text("Sim Speed:");
   ImGui::SameLine();
   ImGui::PushItemWidth(150);
@@ -1405,19 +1394,19 @@ void renderUI() {
   
   ImGui::SameLine(); ImGui::Text(" | "); ImGui::SameLine();
   
-  // Stats
+  
   ImGui::Text("Particles: %d", simulation.aliveCount);
   ImGui::SameLine();
   ImGui::Text("FPS: %.1f", io.Framerate);
   
   ImGui::End();
 
-  // === SIDEBAR ===
+  
   ImGui::SetNextWindowPos(ImVec2(0, topBarHeight));
   ImGui::SetNextWindowSize(ImVec2(350, io.DisplaySize.y - topBarHeight));
   ImGui::Begin("Sidebar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
 
-  // === ENVIRONMENT ===
+  
   if (ImGui::CollapsingHeader("Environment Settings",
                               ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::TextDisabled("World Dimensions (3D Cube)");
@@ -1436,7 +1425,7 @@ void renderUI() {
     }
   }
 
-  // === MOUSE INTERACTION ===
+  
   if (ImGui::CollapsingHeader("Interaction Tools", ImGuiTreeNodeFlags_DefaultOpen)) {
       const char* modes[] = { "Navigation Only", "Paint Particles", "Repel Force", "Attract Force", "Spawn Orbium", "Spawn Cancer" };
       ImGui::Combo("Tool", &simulation.params.interactionMode, modes, 6);
@@ -1455,7 +1444,7 @@ void renderUI() {
       }
   }
 
-  // === INTERACTION PHYSICS ===
+  
   if (ImGui::CollapsingHeader("Physics Parameters")) {
     ImGui::TextDisabled("Perception Kernel");
     ImGui::DragFloat("Sensitivity (w_k)", &simulation.params.w_k, 0.001f, 0.001f,
@@ -1471,7 +1460,7 @@ void renderUI() {
                      5.0f);
   }
 
-  // === LENIA DYNAMICS ===
+  
   if (ImGui::CollapsingHeader("Growth Dynamics")) {
     ImGui::DragFloat("Target Density (mu_g)", &simulation.params.mu_g, 0.01f, 0.0f,
                      2.0f);
@@ -1479,7 +1468,7 @@ void renderUI() {
                      0.001f, 0.5f, "%.4f");
   }
 
-  // === TEMPORAL ===
+  
   if (ImGui::CollapsingHeader("Time & Space")) {
     ImGui::DragFloat("Delta Time (dt)", &simulation.params.dt, 0.01f, 0.01f,
                      0.5f);
@@ -1487,7 +1476,7 @@ void renderUI() {
                      0.1f, "%.4f");
   }
 
-  // === EVOLUTIONARY MECHANICS ===
+  
   if (ImGui::CollapsingHeader("Evolution")) {
     ImGui::Checkbox("Enable Evolution", &simulation.params.evolutionEnabled);
 
@@ -1513,7 +1502,7 @@ void renderUI() {
     }
   }
 
-  // === FOOD SYSTEM ===
+  
   if (ImGui::CollapsingHeader("Food System")) {
     ImGui::Checkbox("Enable Food", &simulation.params.foodEnabled);
 
@@ -1528,7 +1517,7 @@ void renderUI() {
     }
   }
 
-  // === GOAL SYSTEM ===
+  
   if (ImGui::CollapsingHeader("Goal/Target")) {
     bool changed = false;
     const char* goalModes[] = {"None", "Circle", "Box", "Text 'HI'",
@@ -1553,7 +1542,7 @@ void renderUI() {
     }
   }
 
-  // === VISUALIZATION ===
+  
   if (ImGui::CollapsingHeader("Visualization", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("3D Render", &simulation.params.view3D);
 
@@ -1576,7 +1565,7 @@ void renderUI() {
     ImGui::DragFloat("Zoom", &simulation.params.zoom, 0.05f, 0.1f, 5.0f);
   }
 
-  // === SONIFICATION ===
+  
   if (ImGui::CollapsingHeader("Sonification")) {
     ImGui::Checkbox("Enable Audio", &simulation.params.sonificationEnabled);
 
@@ -1610,7 +1599,7 @@ void renderUI() {
   ImGui::TextDisabled("Controls: WASD=Cam | Q/E=Zoom");
   ImGui::TextDisabled("Mouse: Left Click to Interact");
 
-  // === LIVE STATS ===
+  
   float avail = ImGui::GetContentRegionAvail().y;
   if (avail > 160) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + avail - 160);
   
@@ -1636,7 +1625,7 @@ void renderUI() {
 }
 
 int main() {
-  // Initialize GLFW
+  
   if (!glfwInit()) {
     std::cerr << "Failed to initialize GLFW" << std::endl;
     return -1;
@@ -1645,7 +1634,7 @@ int main() {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-  glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);  // Fixed window size
+  glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);  
 
   GLFWwindow* window =
       glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT,
@@ -1658,15 +1647,15 @@ int main() {
 
   glfwMakeContextCurrent(window);
   glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
-  glfwSwapInterval(1);  // VSync
+  glfwSwapInterval(1);  
 
-  // Initialize GLAD
+  
   if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
     std::cerr << "Failed to initialize GLAD" << std::endl;
     return -1;
   }
 
-  // Initialize ImGui
+  
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
@@ -1674,25 +1663,25 @@ int main() {
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init("#version 450");
 
-  // Initialize simulation
+  
   simulation.init();
   simulation.init3D();
 
-  // Initialize audio
+  
   initAudio();
 
-  // Pan tracking
+  
   static ImVec2 panStart;
   static float panStartX, panStartY;
 
-  // Main loop
+  
   while (!glfwWindowShouldClose(window)) {
     processInput(window);
     glfwPollEvents();
 
-    // Handle input
+    
     if (!io.WantCaptureMouse) {
-      // Pan with middle mouse
+      
       if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) {
         panStart = ImGui::GetMousePos();
         panStartX = simulation.params.translateX;
@@ -1701,42 +1690,42 @@ int main() {
       if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
         ImVec2 pos = ImGui::GetMousePos();
       
-      // === INTERACTION TOOLS ===
+      
       if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
           ImVec2 mousePos = ImGui::GetMousePos();
           ImVec2 worldPos = screenToWorld(mousePos.x, mousePos.y);
           
-          if (simulation.params.interactionMode == 1) { // Paint Particles
-              // Spawn multiple particles per frame for "brush" feel
+          if (simulation.params.interactionMode == 1) { 
+              
               for(int k=0; k<5; k++) {
                   std::uniform_real_distribution<float> dist(-simulation.params.brushRadius, simulation.params.brushRadius);
                   float rx = dist(simulation.rng);
                   float ry = dist(simulation.rng);
-                  // Circular brush
+                  
                   if (rx*rx + ry*ry <= simulation.params.brushRadius*simulation.params.brushRadius) {
-                      // Spread in Z slightly to avoid 2D planarity issues if in 3D
+                      
                       float rz = dist(simulation.rng) * 0.1f; 
                       simulation.addParticle(worldPos.x + rx, worldPos.y + ry, rz);
                   }
               }
           }
-          else if (simulation.params.interactionMode == 2) { // Repel
+          else if (simulation.params.interactionMode == 2) { 
               simulation.applyForce(worldPos.x, worldPos.y, 0.0f, simulation.params.forceStrength, simulation.params.brushRadius);
           }
-          else if (simulation.params.interactionMode == 3) { // Attract
+          else if (simulation.params.interactionMode == 3) { 
               simulation.applyForce(worldPos.x, worldPos.y, 0.0f, -simulation.params.forceStrength, simulation.params.brushRadius);
           }
-          else if (simulation.params.interactionMode == 4) { // Spawn Orbium
-              // Single click trigger check handled by IsMouseClicked
+          else if (simulation.params.interactionMode == 4) { 
+              
           }
       }
       
-      // Separate check for single-click actions (Orbium)
+      
       if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
            ImVec2 mousePos = ImGui::GetMousePos();
            ImVec2 worldPos = screenToWorld(mousePos.x, mousePos.y);
            
-           if (simulation.params.interactionMode == 4) { // Spawn Orbium
+           if (simulation.params.interactionMode == 4) { 
                simulation.spawnOrbium(worldPos.x, worldPos.y, 0.0f);
            }
       }
@@ -1749,7 +1738,7 @@ int main() {
         simulation.params.translateY = panStartY + dy;
       }
 
-      // Zoom with scroll
+      
       float scroll = io.MouseWheel;
       if (scroll != 0) {
         simulation.params.zoom *= (1.0f + scroll * 0.1f);
@@ -1757,12 +1746,12 @@ int main() {
             std::max(0.1f, std::min(10.0f, simulation.params.zoom));
       }
       
-      // === INTERACTION TOOLS ===
+      
       if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
           ImVec2 mousePos = ImGui::GetMousePos();
           ImVec2 worldPos = screenToWorld(mousePos.x, mousePos.y);
           
-          if (simulation.params.interactionMode == 1) { // Paint Particles
+          if (simulation.params.interactionMode == 1) { 
               for(int k=0; k<5; k++) {
                   std::uniform_real_distribution<float> dist(-simulation.params.brushRadius, simulation.params.brushRadius);
                   float rx = dist(simulation.rng);
@@ -1773,10 +1762,10 @@ int main() {
                   }
               }
           }
-          else if (simulation.params.interactionMode == 2) { // Repel
+          else if (simulation.params.interactionMode == 2) { 
               simulation.applyForce(worldPos.x, worldPos.y, 0.0f, simulation.params.forceStrength, simulation.params.brushRadius);
           }
-          else if (simulation.params.interactionMode == 3) { // Attract
+          else if (simulation.params.interactionMode == 3) { 
               simulation.applyForce(worldPos.x, worldPos.y, 0.0f, -simulation.params.forceStrength, simulation.params.brushRadius);
           }
       }
@@ -1784,24 +1773,24 @@ int main() {
       if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
            ImVec2 mousePos = ImGui::GetMousePos();
            ImVec2 worldPos = screenToWorld(mousePos.x, mousePos.y);
-           if (simulation.params.interactionMode == 4) { // Spawn Orbium
+           if (simulation.params.interactionMode == 4) { 
                simulation.spawnOrbium(worldPos.x, worldPos.y, 0.0f);
            }
       }
     }
 
-    // Update simulation
+    
     if (!paused) {
       for (int i = 0; i < simulation.params.stepsPerFrame; i++) {
         simulation.step();
       }
 
-      // Update stats every 10 frames
+      
       static int frameCount = 0;
       if (++frameCount % 10 == 0) {
         simulation.updateStats();
 
-        // Update audio (sonification)
+        
         if (simulation.params.sonificationEnabled && g_audio.initialized) {
           g_audio.enabled = true;
           g_audio.numVoices = simulation.params.maxVoices;
@@ -1817,9 +1806,9 @@ int main() {
       }
     }
 
-    // Render
+    
     if (simulation.params.view3D) {
-      // Slightly brighter background for 3D to show depth
+      
       glClearColor(0.01f, 0.03f, 0.06f, 1.0f);
     } else {
       glClearColor(0.0f, 0.02f, 0.05f, 1.0f);
@@ -1837,7 +1826,7 @@ int main() {
     glfwSwapBuffers(window);
   }
 
-  // Cleanup
+  
   shutdownAudio();
 
   ImGui_ImplOpenGL3_Shutdown();

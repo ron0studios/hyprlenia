@@ -1,9 +1,6 @@
 #version 460 core
 
-/*
- * SIMPLE O(N²) Particle Lenia - for testing
- * Uses 8-float particle structure: x, y, vx, vy, energy, mass, pad, pad
- */
+ 
 
 layout(local_size_x = 256) in;
 
@@ -27,46 +24,46 @@ uniform bool u_EnableEvolution;
 uniform vec2 u_WorldMin;
 uniform vec2 u_WorldMax;
 
-// Kernel parameters
-uniform float u_Mu_k;     // Peak distance
-uniform float u_Sigma_k;  // Spread
-uniform float u_W_k;      // Repulsion weight
-uniform float u_Mu_g;     // Growth peak
-uniform float u_Sigma_g;  // Growth spread
-uniform float u_C_rep;    // Repulsion constant
 
-// Energy & evolution
+uniform float u_Mu_k;     
+uniform float u_Sigma_k;  
+uniform float u_W_k;      
+uniform float u_Mu_g;     
+uniform float u_Sigma_g;  
+uniform float u_C_rep;    
+
+
 uniform float u_EnergyDecay;
 uniform float u_EnergyFromGrowth;
 uniform float u_BaseEnergy;
 
-// Gaussian kernel
+
 float gaussianKernel(float r) {
   float diff = r - u_Mu_k;
   return exp(-0.5 * (diff * diff) / (u_Sigma_k * u_Sigma_k));
 }
 
-// Growth function - returns [-1, 1]
-// Positive = good density, Negative = bad density (too crowded or too sparse)
+
+
 float growthFunction(float u) {
   float diff = u - u_Mu_g;
   return 2.0 * exp(-0.5 * (diff * diff) / (u_Sigma_g * u_Sigma_g)) - 1.0;
 }
 
-// Fitness function - returns [0, 1]
-// 1.0 at optimal density, 0.0 at very wrong density
+
+
 float fitnessFunction(float u) {
   float diff = u - u_Mu_g;
   return exp(-0.5 * (diff * diff) / (u_Sigma_g * u_Sigma_g));
 }
 
-// Wrap position
+
 vec2 wrapPosition(vec2 pos) {
   vec2 size = u_WorldMax - u_WorldMin;
   return u_WorldMin + mod(pos - u_WorldMin + size, size);
 }
 
-// Wrapped delta
+
 vec2 wrappedDelta(vec2 from, vec2 to) {
   vec2 size = u_WorldMax - u_WorldMin;
   vec2 d = to - from;
@@ -88,7 +85,7 @@ void main() {
 
   Particle me = particlesIn[idx];
 
-  // Skip dead particles
+  
   if (me.energy < 0.001) {
     particlesOut[idx] = me;
     return;
@@ -100,7 +97,7 @@ void main() {
 
   float maxDist = u_Mu_k + 3.0 * u_Sigma_k;
 
-  // O(N²) loop over all particles
+  
   for (int j = 0; j < u_NumParticles; j++) {
     if (j == int(idx)) continue;
 
@@ -119,16 +116,16 @@ void main() {
     fieldSum += weightedKernel;
     totalWeight += other.mass;
 
-    // Attraction from kernel
+    
     float attraction = u_W_k * weightedKernel;
 
-    // Soft repulsion at close range
+    
     float repulsion = u_C_rep * exp(-dist * 10.0);
 
     force += (attraction - repulsion) * dir;
   }
 
-  // Compute growth and fitness
+  
   float growth = 0.0;
   float fitness = 0.0;
   float neighborCount = 0.0;
@@ -140,47 +137,47 @@ void main() {
     neighborCount = totalWeight;
   }
 
-  // Use growth for additional force
+  
   force += growth * 0.1;
 
-  // Update velocity and position
+  
   vec2 newVelocity = me.velocity + force * u_DeltaTime;
-  newVelocity *= 0.98;  // Damping
+  newVelocity *= 0.98;  
 
   vec2 newPosition = me.position + newVelocity * u_DeltaTime;
   newPosition = wrapPosition(newPosition);
 
-  // Energy update - REAL EVOLUTION
+  
   float newEnergy = me.energy;
 
   if (u_EnableEvolution) {
-    // === SIMPLE MORTALITY SYSTEM ===
-    // Rule: Having neighbors = good, being alone = bad
-    // This is much simpler and more robust than fitness-based
+    
+    
+    
 
     bool hasNeighbors = (neighborCount > 0.1);
 
     if (hasNeighbors) {
-      // With neighbors: gain energy based on how many (capped)
-      // More neighbors = more energy, up to a point
-      float neighborBonus = min(neighborCount, 3.0) / 3.0;  // 0 to 1
+      
+      
+      float neighborBonus = min(neighborCount, 3.0) / 3.0;  
       float energyGain = neighborBonus * u_EnergyFromGrowth;
 
-      // Very small decay even when healthy
+      
       float energyLoss = u_EnergyDecay * 0.05;
 
       newEnergy = me.energy + energyGain - energyLoss;
     } else {
-      // Completely isolated: decay slowly
-      // With energyDecay=0.005, takes 200 steps to die
+      
+      
       newEnergy = me.energy - u_EnergyDecay;
     }
 
-    // Clamp - allow accumulation above 1.0 for reproduction
+    
     newEnergy = clamp(newEnergy, 0.0, 2.0);
   }
 
-  // Write output
+  
   Particle result;
   result.position = newPosition;
   result.velocity = newVelocity;

@@ -1,14 +1,6 @@
 #version 450 core
 
-/*
- * CHRONOS - Ultra-Optimized Display Shader
- * 
- * Optimizations:
- * 1. Subsampled field computation (1/8 resolution)
- * 2. Distance-based early exit for particle rendering
- * 3. Reduced particle loop iterations
- * 4. Simplified field calculations
- */
+ 
 
 in vec2 TexCoord;
 out vec4 FragColor;
@@ -35,14 +27,14 @@ uniform float u_SigmaG2;
 uniform bool u_ShowFields;
 uniform int u_FieldType;
 
-// Food system
+
 uniform sampler2D u_FoodTexture;
 uniform bool u_ShowFood;
 uniform int u_FoodGridSize;
 
 const vec3 BACKGROUND = vec3(0.005, 0.02, 0.05);
 
-// Fast HSL to RGB
+
 vec3 hsl2rgb(vec3 c) {
     vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
     return c.z + c.y * (rgb - 0.5) * (1.0 - abs(2.0 * c.z - 1.0));
@@ -53,13 +45,13 @@ vec3 speciesColor(float species, float energy) {
     return hsl2rgb(vec3(hue, 0.7 + energy * 0.3, 0.3 + energy * 0.4));
 }
 
-// Inline particle read (15 floats per particle: x,y,z, vx,vy,vz, energy, species, age, dna[5], potential)
+
 #define READ_PARTICLE_POS(i) vec2(particles[(i) * 15], particles[(i) * 15 + 1])
 #define READ_PARTICLE_MASS(i) particles[(i) * 15 + 6]
 #define READ_PARTICLE_SPECIES(i) particles[(i) * 15 + 7]
 
-// Wrapped distance squared (fast)
-// World goes from -worldWidth/2 to +worldWidth/2, so total size = worldWidth
+
+
 float wrappedDist2(vec2 pos1, vec2 pos2) {
     vec2 d = pos2 - pos1;
     float halfW = u_WorldWidth * 0.5;
@@ -74,40 +66,40 @@ float wrappedDist2(vec2 pos1, vec2 pos2) {
 void main() {
     vec2 uv = TexCoord * 2.0 - 1.0;
     
-    // Correct for window aspect ratio
+    
     float windowAspect = u_WindowWidth / u_WindowHeight;
     float worldAspect = u_WorldWidth / u_WorldHeight;
     
-    // Scale UV to maintain proper aspect ratio
+    
     vec2 scaledUV = uv;
     if (windowAspect > worldAspect) {
-        // Window is wider than world - letterbox on sides
+        
         scaledUV.x *= windowAspect / worldAspect;
     } else {
-        // Window is taller than world - letterbox on top/bottom
+        
         scaledUV.y *= worldAspect / windowAspect;
     }
     
-    // scaledUV is in [-1, 1], map to world coords [-worldWidth/2, +worldWidth/2]
+    
     vec2 worldPos = vec2(
         scaledUV.x * (u_WorldWidth * 0.5) / u_Zoom + u_TranslateX,
         scaledUV.y * (u_WorldHeight * 0.5) / u_Zoom + u_TranslateY
     );
 
-    // Limit rendering to the world bounds to avoid ghost duplicates
+    
     if (abs(worldPos.x) > u_WorldWidth * 0.5 || abs(worldPos.y) > u_WorldHeight * 0.5) {
-        FragColor = vec4(BACKGROUND * 0.5, 1.0);  // Darker background outside world
+        FragColor = vec4(BACKGROUND * 0.5, 1.0);  
         return;
     }
     
     vec3 color = BACKGROUND;
     
-    // === FAST FIELD OVERLAY ===
-    // Only compute field for every 8th pixel (checkerboard pattern)
+    
+    
     if (u_ShowFields && u_FieldType > 0) {
         ivec2 pixelCoord = ivec2(gl_FragCoord.xy);
         
-        // Subsample: only compute for every 4th pixel in each dimension
+        
         if ((pixelCoord.x & 3) == 0 && (pixelCoord.y & 3) == 0) {
             float density = 0.0;
             float separation = 0.0;
@@ -115,8 +107,8 @@ void main() {
             float cutoff2 = (u_MuK + 3.0 * sqrt(u_SigmaK2));
             cutoff2 *= cutoff2;
             
-            // Sample only a subset of particles for field viz
-            int step = max(1, u_NumParticles / 100);  // Max 100 samples
+            
+            int step = max(1, u_NumParticles / 100);  
             for (int i = 0; i < u_NumParticles; i += step) {
                 float mass = READ_PARTICLE_MASS(i);
                 if (mass < 0.01) continue;
@@ -165,34 +157,34 @@ void main() {
             
             color = mix(BACKGROUND, fieldColor, fieldVal * 0.4);
         } else {
-            // For non-sampled pixels, just use background with slight tint
+            
             color = BACKGROUND * 1.1;
         }
     }
     
-    // === FOOD RENDERING ===
-    // Show food as glowing green spots
+    
+    
     if (u_ShowFood) {
-        // Convert world position to food texture UV
-        // World goes from -worldWidth/2 to +worldWidth/2
+        
+        
         vec2 foodUV = (worldPos + vec2(u_WorldWidth, u_WorldHeight) * 0.5) / vec2(u_WorldWidth, u_WorldHeight);
         
-        // Wrap for toroidal display
+        
         foodUV = fract(foodUV);
         
-        // Sample food texture
+        
         vec4 foodData = texture(u_FoodTexture, foodUV);
         float foodAmount = foodData.r;
         float freshness = foodData.g;
         
         if (foodAmount > 0.01) {
-            // Food color: bright green/yellow based on freshness
+            
             vec3 foodColor = mix(vec3(0.3, 0.8, 0.1), vec3(0.9, 0.9, 0.2), freshness);
             
-            // Add glow effect based on food density
+            
             float foodGlow = foodAmount * 0.6;
             
-            // Sparkle effect for fresh food
+            
             if (freshness > 0.5) {
                 vec2 sparkleUV = foodUV * float(u_FoodGridSize);
                 float sparkle = sin(sparkleUV.x * 3.14159 * 2.0) * sin(sparkleUV.y * 3.14159 * 2.0);
@@ -204,7 +196,7 @@ void main() {
         }
     }
     
-    // === OPTIMIZED PARTICLE RENDERING ===
+    
     float minDist2 = 1000.0;
     vec3 closestColor = vec3(1.0);
     float closestEnergy = 0.0;
@@ -212,7 +204,7 @@ void main() {
     float glowRadius = 0.5 / u_Zoom;
     float glowRadius2 = glowRadius * glowRadius;
     
-    // Only check particles within potential glow range
+    
     for (int i = 0; i < u_NumParticles; i++) {
         float mass = READ_PARTICLE_MASS(i);
         if (mass < 0.01) continue;
@@ -220,7 +212,7 @@ void main() {
         vec2 ppos = READ_PARTICLE_POS(i);
         float d2 = wrappedDist2(worldPos, ppos);
         
-        // Early exit if beyond glow range and we already found something
+        
         if (d2 > glowRadius2 && minDist2 < glowRadius2) continue;
         
         if (d2 < minDist2) {
@@ -233,21 +225,21 @@ void main() {
     float minDist = sqrt(minDist2);
     float particleRadius = 0.15 / u_Zoom;
     
-    // Glow
+    
     if (minDist < glowRadius) {
         float glow = 1.0 - minDist / glowRadius;
         glow *= glow;
         color = mix(color, closestColor * 0.5, glow * closestEnergy * 0.5);
     }
     
-    // Core
+    
     if (minDist < particleRadius) {
         float core = 1.0 - minDist / particleRadius;
         core = sqrt(core);
         color = mix(color, closestColor, core);
     }
     
-    // Bright center
+    
     if (minDist < particleRadius * 0.3) {
         color = mix(color, vec3(1.0), 0.8);
     }

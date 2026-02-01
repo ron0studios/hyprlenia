@@ -1,19 +1,14 @@
 #version 460 core
 
-/*
- * 3D Terrain Vertex Shader
- * 
- * Generates a terrain mesh and displaces vertices based on heightmap.
- * Uses instancing for efficient grid generation.
- */
+ 
 
-layout(location = 0) in vec2 aGridPos;  // Grid position (0-1 range)
+layout(location = 0) in vec2 aGridPos;  
 
 out vec3 vWorldPos;
 out vec3 vNormal;
 out vec2 vUV;
 out float vHeight;
-out vec4 vFieldData;  // height, density, species, energy
+out vec4 vFieldData;  
 
 uniform sampler2D u_Heightmap;
 
@@ -25,7 +20,7 @@ uniform float u_TranslateX;
 uniform float u_TranslateY;
 uniform float u_Zoom;
 
-// Sample height with filtering
+
 vec4 sampleHeightmap(vec2 uv) {
     return texture(u_Heightmap, uv);
 }
@@ -33,20 +28,20 @@ vec4 sampleHeightmap(vec2 uv) {
 void main() {
     vUV = aGridPos;
     
-    // Map grid to world coordinates
+    
     vec2 worldXZ = vec2(
         (aGridPos.x - 0.5) * u_WorldWidth,
         (aGridPos.y - 0.5) * u_WorldHeight
     );
     
-    // Apply view transform
+    
     worldXZ = worldXZ / u_Zoom - vec2(u_TranslateX, u_TranslateY);
     
-    // Sample heightmap
+    
     vFieldData = sampleHeightmap(aGridPos);
     vHeight = vFieldData.r;
     
-    // Calculate normal using central differences
+    
     float texelX = 1.0 / textureSize(u_Heightmap, 0).x;
     float texelY = 1.0 / textureSize(u_Heightmap, 0).y;
     
@@ -62,7 +57,7 @@ void main() {
     ));
     vNormal = normal;
     
-    // Create 3D position with height displacement
+    
     vec3 pos = vec3(worldXZ.x, vHeight * u_MaxHeight, worldXZ.y);
     vWorldPos = pos;
     

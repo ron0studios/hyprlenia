@@ -20,4 +20,4 @@ class ComputeShader : public Shader {
   std::string m_path;
 };
 
-#endif  // CHRONOS_COMPUTE_SHADER_H
+#endif  
