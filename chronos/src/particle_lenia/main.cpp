@@ -407,7 +407,7 @@ class ParticleLeniaSimulation {
     stepShader.setUniform("u_EnergyDecay", params.energyDecay);
     stepShader.setUniform("u_EnergyFromGrowth", params.energyFromGrowth);
     
-   // Predator-prey uniforms
+    // Predator-prey uniforms
     stepShader.setUniform("u_PredationRadius", params.predationRadius);
     stepShader.setUniform("u_PredationRate", params.predationRate);
     stepShader.setUniform("u_AggressionCost", params.aggressionCost);
@@ -416,7 +416,7 @@ class ParticleLeniaSimulation {
     stepShader.setUniform("u_FoodGridSize", foodGridSize);
     stepShader.setUniform("u_FoodConsumptionRadius", params.foodConsumptionRadius);
 
-    // Random seed for evolution
+    // Randoma seed for evolution
     static int frame = 0;
     stepShader.setUniform("u_RandomSeed", frame++);
 
