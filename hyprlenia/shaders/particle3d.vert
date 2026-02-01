@@ -20,12 +20,14 @@ uniform vec3 u_CameraPos;
 
 out float vEnergy;
 out float vSpecies;
+out float vPotential;
 out vec3 vWorldPos;
 
 
 #define READ_PARTICLE_POS(i) vec3(particles[(i) * 15], particles[(i) * 15 + 1], particles[(i) * 15 + 2])
 #define READ_PARTICLE_ENERGY(i) particles[(i) * 15 + 6]
 #define READ_PARTICLE_SPECIES(i) particles[(i) * 15 + 7]
+#define READ_PARTICLE_POTENTIAL(i) particles[(i) * 15 + 14]
 
 void main() {
     int idx = gl_VertexID;
@@ -34,6 +36,7 @@ void main() {
     vec3 pos = READ_PARTICLE_POS(idx);
     vEnergy = READ_PARTICLE_ENERGY(idx);
     vSpecies = READ_PARTICLE_SPECIES(idx);
+    vPotential = READ_PARTICLE_POTENTIAL(idx);
 
     
     if (vEnergy < 0.01) {
