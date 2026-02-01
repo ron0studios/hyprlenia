@@ -10,13 +10,14 @@
  * - E(x) = R(x) - G(U(x)) is the energy field
  * - Particles move down the energy gradient: dx/dt = -∇E
  *
- * Particle layout (14 floats):
+ * Particle layout (15 floats):
  *   0-2: position (x, y, z)
  *   3-5: velocity (vx, vy, vz)
  *   6: energy
  *   7: species
  *   8: age
  *   9-13: dna[5]
+ *   14: potential (U field value for sonification)
  */
 
 layout(local_size_x = 128) in;
@@ -187,7 +188,7 @@ void main() {
   if (idx >= u_NumParticles) return;
 
   int i = int(idx);
-  int base = i * 14;  // 14 floats per particle
+  int base = i * 15;  // 15 floats per particle
 
   // Read my particle data (3D)
   vec3 myPos =
@@ -204,7 +205,7 @@ void main() {
 
   // Dead particles stay dead
   if (myEnergy < 0.01) {
-    for (int j = 0; j < 14; j++) {
+    for (int j = 0; j < 15; j++) {
       particlesOut[base + j] = particlesIn[base + j];
     }
     return;
@@ -234,7 +235,7 @@ void main() {
     // Collaborative load (3D position + energy)
     int loadIdx = t * 128 + int(localIdx);
     if (loadIdx < u_NumParticles) {
-      int loadBase = loadIdx * 14;
+      int loadBase = loadIdx * 15;
       tileData[localIdx] = vec4(particlesIn[loadBase],       // x
                                 particlesIn[loadBase + 1],   // y
                                 particlesIn[loadBase + 2],   // z
@@ -372,9 +373,9 @@ void main() {
 
       if (random(i, 1) < reproChance) {
         for (int j = 0; j < u_NumParticles; j++) {
-          float otherE = particlesIn[j * 14 + 6];
+          float otherE = particlesIn[j * 15 + 6];
           if (otherE < 0.01) {
-            int childBase = j * 14;
+            int childBase = j * 15;
 
             // Random direction in 3D (spherical)
             float theta = random(i, 2) * 6.28318;        // azimuth
@@ -401,6 +402,7 @@ void main() {
               particlesOut[childBase + 9 + d] =
                   clamp(myDna[d] + mut, -0.5, 0.5);
             }
+            particlesOut[childBase + 14] = 0.0;  // Initial potential
 
             myEnergy -= 0.35;
             break;
@@ -410,7 +412,7 @@ void main() {
     }
   }
 
-  // Write output (14 floats)
+  // Write output (15 floats)
   particlesOut[base + 0] = myPos.x;
   particlesOut[base + 1] = myPos.y;
   particlesOut[base + 2] = myPos.z;
@@ -423,4 +425,5 @@ void main() {
   for (int d = 0; d < 5; d++) {
     particlesOut[base + 9 + d] = myDna[d];
   }
+  particlesOut[base + 14] = UR_c.x;  // Potential field U for sonification
 }

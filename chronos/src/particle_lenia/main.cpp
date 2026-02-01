@@ -18,11 +18,17 @@
 #include <imgui/imgui_impl_opengl3.h>
 #include <omp.h>
 
+#define MINIAUDIO_IMPLEMENTATION
+#include <miniaudio.h>
+
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <random>
 #include <vector>
 #include <sstream>
@@ -114,9 +120,16 @@ struct SimulationParams {
 
   // Render settings
   bool showGoal = false;
+
+  // Sonification parameters
+  bool sonificationEnabled = false;
+  float audioVolume = 0.3f;
+  float minFrequency = 80.0f;    // Hz (bass)
+  float maxFrequency = 800.0f;   // Hz (treble)
+  int maxVoices = 32;            // Number of particles to sonify
 };
 
-// Particle structure (must match shader) - 14 floats total
+// Particle structure (must match shader) - 15 floats total
 struct Particle {
   float x, y, z;     // Position (3D)
   float vx, vy, vz;  // Velocity (3D)
@@ -125,9 +138,196 @@ struct Particle {
   float age;         // Age in simulation steps
   float dna[5];  // Genetic parameters (mu_k, sigma_k2, mu_g, sigma_g2, c_rep
                  // variations)
+  float potential;   // U field value (for sonification)
 };
 
-constexpr int PARTICLE_FLOATS = 14;  // Number of floats per particle
+constexpr int PARTICLE_FLOATS = 15;  // Number of floats per particle
+
+// ============================================================================
+// SONIFICATION SYSTEM
+// Based on: https://google-research.github.io/self-organising-systems/particle-lenia/
+// Each particle gets a voice with:
+// - Frequency based on potential energy (U field)
+// - Volume based on particle speed
+// ============================================================================
+
+struct AudioVoice {
+  float frequency = 220.0f;   // Current frequency (Hz)
+  float amplitude = 0.0f;     // Current volume [0, 1]
+  float phase = 0.0f;         // Oscillator phase
+  float targetFreq = 220.0f;  // Target frequency (for smoothing)
+  float targetAmp = 0.0f;     // Target amplitude (for smoothing)
+};
+
+struct AudioState {
+  ma_device device;
+  bool initialized = false;
+  bool enabled = false;
+
+  static constexpr int MAX_VOICES = 64;
+  AudioVoice voices[MAX_VOICES];
+  int numVoices = 32;
+
+  float masterVolume = 0.3f;
+  float minFreq = 80.0f;
+  float maxFreq = 800.0f;
+
+  std::mutex voiceMutex;
+  std::atomic<bool> running{false};
+};
+
+AudioState g_audio;
+
+// Audio callback - generates samples in real-time
+void audioCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
+  (void)pInput;
+
+  float* output = static_cast<float*>(pOutput);
+
+  if (!g_audio.running || !g_audio.enabled) {
+    memset(output, 0, frameCount * sizeof(float));
+    return;
+  }
+
+  const float sampleRate = static_cast<float>(pDevice->sampleRate);
+  const float smoothing = 0.995f;  // Smooth frequency/amplitude changes
+
+  for (ma_uint32 i = 0; i < frameCount; i++) {
+    float sample = 0.0f;
+
+    // Mix all voices
+    for (int v = 0; v < g_audio.numVoices; v++) {
+      AudioVoice& voice = g_audio.voices[v];
+
+      // Smooth transitions
+      voice.frequency = voice.frequency * smoothing + voice.targetFreq * (1.0f - smoothing);
+      voice.amplitude = voice.amplitude * smoothing + voice.targetAmp * (1.0f - smoothing);
+
+      if (voice.amplitude > 0.001f) {
+        // Sine wave oscillator
+        float sine = std::sin(voice.phase * 2.0f * 3.14159265f);
+        sample += sine * voice.amplitude;
+
+        // Advance phase
+        voice.phase += voice.frequency / sampleRate;
+        if (voice.phase >= 1.0f) voice.phase -= 1.0f;
+      }
+    }
+
+    // Apply master volume and soft clipping
+    sample *= g_audio.masterVolume / static_cast<float>(std::max(1, g_audio.numVoices / 4));
+    sample = std::tanh(sample);  // Soft clip
+
+    output[i] = sample;
+  }
+}
+
+void initAudio() {
+  ma_device_config config = ma_device_config_init(ma_device_type_playback);
+  config.playback.format = ma_format_f32;
+  config.playback.channels = 1;
+  config.sampleRate = 44100;
+  config.dataCallback = audioCallback;
+
+  if (ma_device_init(nullptr, &config, &g_audio.device) != MA_SUCCESS) {
+    std::cerr << "Failed to initialize audio device" << std::endl;
+    return;
+  }
+
+  g_audio.initialized = true;
+  g_audio.running = true;
+
+  if (ma_device_start(&g_audio.device) != MA_SUCCESS) {
+    std::cerr << "Failed to start audio device" << std::endl;
+    ma_device_uninit(&g_audio.device);
+    g_audio.initialized = false;
+    return;
+  }
+
+  std::cout << "Audio initialized: " << g_audio.device.sampleRate << " Hz" << std::endl;
+}
+
+void shutdownAudio() {
+  if (g_audio.initialized) {
+    g_audio.running = false;
+    ma_device_uninit(&g_audio.device);
+    g_audio.initialized = false;
+  }
+}
+
+// Update audio voices from particle data
+void updateAudioFromParticles(const std::vector<float>& particleData, int maxParticles,
+                               float minFreq, float maxFreq, float volume) {
+  if (!g_audio.initialized) return;
+
+  g_audio.minFreq = minFreq;
+  g_audio.maxFreq = maxFreq;
+  g_audio.masterVolume = volume;
+
+  // Find the most "interesting" particles (highest energy + activity)
+  struct ParticleScore {
+    int index;
+    float score;
+  };
+  std::vector<ParticleScore> scores;
+  scores.reserve(maxParticles);
+
+  for (int i = 0; i < maxParticles; i++) {
+    int base = i * PARTICLE_FLOATS;
+    float energy = particleData[base + 6];
+    if (energy < 0.01f) continue;
+
+    // Speed from velocity
+    float vx = particleData[base + 3];
+    float vy = particleData[base + 4];
+    float vz = particleData[base + 5];
+    float speed = std::sqrt(vx*vx + vy*vy + vz*vz);
+
+    // Potential field (U)
+    float potential = particleData[base + 14];
+
+    // Score by energy and activity
+    float score = energy * (1.0f + speed * 0.5f + potential * 0.3f);
+    scores.push_back({i, score});
+  }
+
+  // Sort by score (descending)
+  std::sort(scores.begin(), scores.end(),
+            [](const ParticleScore& a, const ParticleScore& b) { return a.score > b.score; });
+
+  // Update voices with top particles
+  int numVoices = std::min(g_audio.numVoices, static_cast<int>(scores.size()));
+
+  for (int v = 0; v < AudioState::MAX_VOICES; v++) {
+    if (v < numVoices) {
+      int idx = scores[v].index;
+      int base = idx * PARTICLE_FLOATS;
+
+      float energy = particleData[base + 6];
+      float vx = particleData[base + 3];
+      float vy = particleData[base + 4];
+      float vz = particleData[base + 5];
+      float speed = std::sqrt(vx*vx + vy*vy + vz*vz);
+      float potential = particleData[base + 14];
+
+      // Map potential to frequency (log scale for musical feel)
+      // Potential typically ranges from 0 to ~2
+      float t = std::clamp(potential / 2.0f, 0.0f, 1.0f);
+      float freq = minFreq * std::pow(maxFreq / minFreq, t);
+
+      // Map speed to amplitude
+      float amp = std::clamp(speed * 2.0f, 0.0f, 1.0f) * energy;
+
+      g_audio.voices[v].targetFreq = freq;
+      g_audio.voices[v].targetAmp = amp;
+    } else {
+      // Fade out unused voices
+      g_audio.voices[v].targetAmp = 0.0f;
+    }
+  }
+}
+
+// ============================================================================
 
 class ParticleLeniaSimulation {
  public:
@@ -1304,6 +1504,36 @@ void renderUI() {
     ImGui::DragFloat("Zoom", &simulation.params.zoom, 0.05f, 0.1f, 5.0f);
   }
 
+  // === SONIFICATION ===
+  if (ImGui::CollapsingHeader("Sonification")) {
+    ImGui::Checkbox("Enable Audio", &simulation.params.sonificationEnabled);
+
+    if (simulation.params.sonificationEnabled) {
+      ImGui::Indent();
+
+      if (g_audio.initialized) {
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Audio: Active");
+      } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Audio: Not Available");
+      }
+
+      ImGui::Spacing();
+      ImGui::TextDisabled("Volume & Voices");
+      ImGui::DragFloat("Master Volume", &simulation.params.audioVolume, 0.01f, 0.0f, 1.0f);
+      ImGui::DragInt("Voice Count", &simulation.params.maxVoices, 1, 1, 64);
+
+      ImGui::Spacing();
+      ImGui::TextDisabled("Frequency Range");
+      ImGui::DragFloat("Min Frequency", &simulation.params.minFrequency, 5.0f, 20.0f, 500.0f, "%.0f Hz");
+      ImGui::DragFloat("Max Frequency", &simulation.params.maxFrequency, 10.0f, 200.0f, 2000.0f, "%.0f Hz");
+
+      ImGui::Spacing();
+      ImGui::TextDisabled("Mapping: Potential -> Frequency, Speed -> Volume");
+
+      ImGui::Unindent();
+    }
+  }
+
   ImGui::Separator();
   ImGui::TextDisabled("Controls: WASD=Cam | Q/E=Zoom");
   ImGui::TextDisabled("Mouse: Left Click to Interact");
@@ -1375,6 +1605,9 @@ int main() {
   // Initialize simulation
   simulation.init();
   simulation.init3D();
+
+  // Initialize audio
+  initAudio();
 
   // Pan tracking
   static ImVec2 panStart;
@@ -1495,6 +1728,20 @@ int main() {
       static int frameCount = 0;
       if (++frameCount % 10 == 0) {
         simulation.updateStats();
+
+        // Update audio (sonification)
+        if (simulation.params.sonificationEnabled && g_audio.initialized) {
+          g_audio.enabled = true;
+          g_audio.numVoices = simulation.params.maxVoices;
+          Buffer& activeBuffer = simulation.useBufferA ? simulation.particleBufferA : simulation.particleBufferB;
+          std::vector<float> data = activeBuffer.getData();
+          updateAudioFromParticles(data, simulation.params.maxParticles,
+                                    simulation.params.minFrequency,
+                                    simulation.params.maxFrequency,
+                                    simulation.params.audioVolume);
+        } else {
+          g_audio.enabled = false;
+        }
       }
     }
 
@@ -1519,6 +1766,8 @@ int main() {
   }
 
   // Cleanup
+  shutdownAudio();
+
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImGui::DestroyContext();
