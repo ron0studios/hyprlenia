@@ -167,6 +167,11 @@ class ParticleLeniaSimulation {
   int aliveCount = 0;
   float avgEnergy = 0.0f;
   float avgAge = 0.0f;
+  
+  // History
+  std::vector<float> historyAlive;
+  std::vector<float> historyEnergy;
+  const size_t historyMaxSize = 300;
 
   void init() {
     // Initialize RNG
@@ -902,6 +907,13 @@ class ParticleLeniaSimulation {
     aliveCount = localAliveCount;
     avgEnergy = aliveCount > 0 ? totalEnergy / aliveCount : 0.0f;
     avgAge = aliveCount > 0 ? totalAge / aliveCount : 0.0f;
+    
+    // Update History
+    historyAlive.push_back((float)aliveCount);
+    if (historyAlive.size() > historyMaxSize) historyAlive.erase(historyAlive.begin());
+    
+    historyEnergy.push_back(avgEnergy);
+    if (historyEnergy.size() > historyMaxSize) historyEnergy.erase(historyEnergy.begin());
   }
 
   void addParticle(float x, float y, float z) {
@@ -1059,52 +1071,79 @@ void renderUI() {
   ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
 
-  ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(320, 650), ImGuiCond_FirstUseEver);
+  // === CUSTOM GREY THEME ===
+  ImGuiStyle& style = ImGui::GetStyle();
+  style.Colors[ImGuiCol_Text] = ImVec4(0.90f, 0.90f, 0.90f, 1.00f);
+  style.Colors[ImGuiCol_WindowBg] = ImVec4(0.12f, 0.12f, 0.12f, 1.00f);
+  style.Colors[ImGuiCol_Header] = ImVec4(0.25f, 0.25f, 0.25f, 1.00f);
+  style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.35f, 0.35f, 0.35f, 1.00f);
+  style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.40f, 0.40f, 0.40f, 1.00f);
+  style.Colors[ImGuiCol_Button] = ImVec4(0.25f, 0.25f, 0.25f, 1.00f);
+  style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.35f, 0.35f, 0.35f, 1.00f);
+  style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.45f, 0.45f, 0.45f, 1.00f);
+  style.Colors[ImGuiCol_TitleBg] = ImVec4(0.15f, 0.15f, 0.15f, 1.00f);
+  style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.20f, 0.20f, 0.20f, 1.00f);
+  style.Colors[ImGuiCol_FrameBg] = ImVec4(0.20f, 0.20f, 0.20f, 1.00f);
+  style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.30f, 0.30f, 0.30f, 1.00f);
+  style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.40f, 0.40f, 0.40f, 1.00f);
+  style.Colors[ImGuiCol_SliderGrab] = ImVec4(0.50f, 0.50f, 0.50f, 1.00f);
+  style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.70f, 0.70f, 0.70f, 1.00f);
+  style.Colors[ImGuiCol_CheckMark] = ImVec4(0.70f, 0.70f, 0.70f, 1.00f);
+  
+  ImGuiIO& io = ImGui::GetIO();
+  float topBarHeight = 60.0f;
 
-  ImGui::Begin("Chronos Control Panel");
-
-  // === SIMULATION STATUS ===
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "SIMULATION STATUS");
-  ImGui::Text("Living Entities: %d / %d", simulation.aliveCount,
-              simulation.params.maxParticles);
-  ImGui::Text("Mean Vitality: %.2f", simulation.avgEnergy);
-  ImGui::Text("Mean Lifespan: %.0f ticks", simulation.avgAge);
-  ImGui::Text(
-      "Performance: %.1f FPS (%.2f ms/tick)", ImGui::GetIO().Framerate,
-      (1000.0f / ImGui::GetIO().Framerate) / simulation.params.stepsPerFrame);
-
-  ImGui::Separator();
-
-  // === PLAYBACK CONTROLS ===
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "PLAYBACK");
-
-  float buttonWidth = 100.0f;
-  if (ImGui::Button(paused ? "Resume" : "Halt", ImVec2(buttonWidth, 0))) {
-    paused = !paused;
+  // === TOP BAR ===
+  ImGui::SetNextWindowPos(ImVec2(0, 0));
+  ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, topBarHeight));
+  ImGui::Begin("TopBar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar);
+  
+  // Play/Pause
+  if (paused) {
+      if (ImGui::Button(" PLAY ", ImVec2(0, 30))) paused = !paused;
+  } else {
+      if (ImGui::Button(" PAUSE ", ImVec2(0, 30))) paused = !paused;
   }
   ImGui::SameLine();
-  if (ImGui::Button("Reinitialize", ImVec2(buttonWidth, 0))) {
+  
+  // Reinit
+  if (ImGui::Button("Restart", ImVec2(0, 30))) {
     simulation.resetParticles();
   }
-
-  ImGui::SliderInt("Ticks per Frame", &simulation.params.stepsPerFrame, 1, 50);
-
-  ImGui::Separator();
-
-  // === SCENE MANAGEMENT ===
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "SCENE MANAGEMENT");
-  static char sceneFilename[128] = "scene.txt";
-  ImGui::InputText("Filename", sceneFilename, 128);
-  if (ImGui::Button("Export Scene", ImVec2(buttonWidth, 0))) {
-    simulation.saveScene(sceneFilename);
-  }
   ImGui::SameLine();
-  if (ImGui::Button("Import Scene", ImVec2(buttonWidth, 0))) {
-    simulation.loadScene(sceneFilename);
-  }
+  
+  // Scene I/O
+  static char sceneFilename[128] = "scene.txt";
+  ImGui::PushItemWidth(150);
+  ImGui::InputText("##file", sceneFilename, 128);
+  ImGui::PopItemWidth();
+  ImGui::SameLine();
+  if (ImGui::Button("Load", ImVec2(0, 30))) simulation.loadScene(sceneFilename);
+  ImGui::SameLine();
+  if (ImGui::Button("Save", ImVec2(0, 30))) simulation.saveScene(sceneFilename);
+  
+  ImGui::SameLine(); ImGui::Text(" | "); ImGui::SameLine();
+  
+  // Speed
+  ImGui::Text("Sim Speed:");
+  ImGui::SameLine();
+  ImGui::PushItemWidth(150);
+  ImGui::SliderInt("##speed", &simulation.params.stepsPerFrame, 1, 50, "%d/frame");
+  ImGui::PopItemWidth();
+  
+  ImGui::SameLine(); ImGui::Text(" | "); ImGui::SameLine();
+  
+  // Stats
+  ImGui::Text("Particles: %d", simulation.aliveCount);
+  ImGui::SameLine();
+  ImGui::Text("FPS: %.1f", io.Framerate);
+  
+  ImGui::End();
 
-  ImGui::Separator();
+  // === SIDEBAR ===
+  ImGui::SetNextWindowPos(ImVec2(0, topBarHeight));
+  ImGui::SetNextWindowSize(ImVec2(350, io.DisplaySize.y - topBarHeight));
+  ImGui::Begin("Sidebar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
 
   // === ENVIRONMENT ===
   if (ImGui::CollapsingHeader("Environment Settings",
@@ -1126,9 +1165,9 @@ void renderUI() {
   }
 
   // === MOUSE INTERACTION ===
-  if (ImGui::CollapsingHeader("Mouse Interaction", ImGuiTreeNodeFlags_DefaultOpen)) {
-      const char* modes[] = { "Navigation Only", "Paint Particles", "Repel Force", "Attract Force", "Spawn Orbium" };
-      ImGui::Combo("Active Tool", &simulation.params.interactionMode, modes, 5);
+  if (ImGui::CollapsingHeader("Interaction Tools", ImGuiTreeNodeFlags_DefaultOpen)) {
+      const char* modes[] = { "Navigation Only", "Paint Particles", "Repel Force", "Attract Force", "Spawn Orbium", "Spawn Cancer" };
+      ImGui::Combo("Tool", &simulation.params.interactionMode, modes, 6);
       
       if (simulation.params.interactionMode > 0) {
           ImGui::Indent();
@@ -1136,117 +1175,105 @@ void renderUI() {
           if (simulation.params.interactionMode == 2 || simulation.params.interactionMode == 3) {
              ImGui::DragFloat("Force Strength", &simulation.params.forceStrength, 0.01f, 0.0f, 5.0f);
           }
+          if (simulation.params.interactionMode == 5) {
+             ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Cancer: Predatory Cells");
+          }
           ImGui::Unindent();
-          ImGui::TextColored(ImVec4(1,1,0,1), "Hold Left Click to use tool");
+          ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.0f, 1.0f), "Hold Left Click to use tool");
       }
   }
 
   // === INTERACTION PHYSICS ===
-  if (ImGui::CollapsingHeader("Interaction Physics")) {
+  if (ImGui::CollapsingHeader("Physics Parameters")) {
     ImGui::TextDisabled("Perception Kernel");
-    ImGui::DragFloat("Sensitivity##k", &simulation.params.w_k, 0.001f, 0.001f,
+    ImGui::DragFloat("Sensitivity (w_k)", &simulation.params.w_k, 0.001f, 0.001f,
                      0.1f, "%.4f");
-    ImGui::DragFloat("Optimal Range##k", &simulation.params.mu_k, 0.1f, 0.5f,
+    ImGui::DragFloat("Optimal Range (mu_k)", &simulation.params.mu_k, 0.1f, 0.5f,
                      20.0f);
-    ImGui::DragFloat("Range Variance##k", &simulation.params.sigma_k2, 0.05f,
+    ImGui::DragFloat("Variance (sigma_k)", &simulation.params.sigma_k2, 0.05f,
                      0.1f, 10.0f);
 
     ImGui::Spacing();
-    ImGui::TextDisabled("Separation Force");
-    ImGui::DragFloat("Push Intensity", &simulation.params.c_rep, 0.1f, 0.0f,
+    ImGui::TextDisabled("Forces");
+    ImGui::DragFloat("Repulsion (c_rep)", &simulation.params.c_rep, 0.1f, 0.0f,
                      5.0f);
   }
 
   // === LENIA DYNAMICS ===
-  if (ImGui::CollapsingHeader("Lenia Dynamics",
-                              ImGuiTreeNodeFlags_DefaultOpen)) {
-    ImGui::TextDisabled("Growth Response Curve");
-    ImGui::DragFloat("Target Density", &simulation.params.mu_g, 0.01f, 0.0f,
+  if (ImGui::CollapsingHeader("Growth Dynamics")) {
+    ImGui::DragFloat("Target Density (mu_g)", &simulation.params.mu_g, 0.01f, 0.0f,
                      2.0f);
-    ImGui::DragFloat("Density Tolerance", &simulation.params.sigma_g2, 0.001f,
+    ImGui::DragFloat("Tolerance (sigma_g)", &simulation.params.sigma_g2, 0.001f,
                      0.001f, 0.5f, "%.4f");
   }
 
   // === TEMPORAL ===
-  if (ImGui::CollapsingHeader("Temporal Settings")) {
-    ImGui::DragFloat("Integration Step", &simulation.params.dt, 0.01f, 0.01f,
+  if (ImGui::CollapsingHeader("Time & Space")) {
+    ImGui::DragFloat("Delta Time (dt)", &simulation.params.dt, 0.01f, 0.01f,
                      0.5f);
-    ImGui::DragFloat("Gradient Epsilon", &simulation.params.h, 0.001f, 0.001f,
+    ImGui::DragFloat("Space Step (h)", &simulation.params.h, 0.001f, 0.001f,
                      0.1f, "%.4f");
   }
 
   // === EVOLUTIONARY MECHANICS ===
-  if (ImGui::CollapsingHeader("Evolutionary Mechanics",
-                              ImGuiTreeNodeFlags_DefaultOpen)) {
-    ImGui::Checkbox("Active Evolution", &simulation.params.evolutionEnabled);
+  if (ImGui::CollapsingHeader("Evolution")) {
+    ImGui::Checkbox("Enable Evolution", &simulation.params.evolutionEnabled);
 
     if (simulation.params.evolutionEnabled) {
       ImGui::Spacing();
-      ImGui::TextDisabled("Population Dynamics");
-      ImGui::DragFloat("Reproduction Chance", &simulation.params.birthRate,
+      ImGui::TextDisabled("Population");
+      ImGui::DragFloat("Birth Rate", &simulation.params.birthRate,
                        0.0001f, 0.0f, 0.01f, "%.5f");
-      ImGui::DragFloat("Mortality Baseline", &simulation.params.deathRate,
+      ImGui::DragFloat("Death Rate", &simulation.params.deathRate,
                        0.0001f, 0.0f, 0.01f, "%.5f");
 
       ImGui::Spacing();
       ImGui::TextDisabled("Genetics");
-      ImGui::DragFloat("Mutation Amplitude", &simulation.params.mutationRate,
+      ImGui::DragFloat("Mutation Rate", &simulation.params.mutationRate,
                        0.01f, 0.0f, 0.5f);
 
       ImGui::Spacing();
       ImGui::TextDisabled("Metabolism");
-      ImGui::DragFloat("Vitality Drain", &simulation.params.energyDecay,
+      ImGui::DragFloat("Energy Decay", &simulation.params.energyDecay,
                        0.0001f, 0.0f, 0.01f, "%.5f");
-      ImGui::DragFloat("Vitality Gain", &simulation.params.energyFromGrowth,
+      ImGui::DragFloat("Energy Gain", &simulation.params.energyFromGrowth,
                        0.001f, 0.0f, 0.1f);
     }
   }
 
   // === FOOD SYSTEM ===
-  if (ImGui::CollapsingHeader("Food System", ImGuiTreeNodeFlags_DefaultOpen)) {
+  if (ImGui::CollapsingHeader("Food System")) {
     ImGui::Checkbox("Enable Food", &simulation.params.foodEnabled);
 
     if (simulation.params.foodEnabled) {
-      ImGui::Checkbox("Show Food", &simulation.params.showFood);
-
-      ImGui::Spacing();
-      ImGui::TextDisabled("Food Dynamics");
+      ImGui::Checkbox("Show Food Grid", &simulation.params.showFood);
       ImGui::DragFloat("Spawn Rate", &simulation.params.foodSpawnRate, 0.0001f,
                        0.0f, 0.01f, "%.4f");
       ImGui::DragFloat("Decay Rate", &simulation.params.foodDecayRate, 0.0001f,
                        0.0f, 0.01f, "%.4f");
-      ImGui::DragFloat("Max Amount", &simulation.params.foodMaxAmount, 0.1f,
+      ImGui::DragFloat("Max Food", &simulation.params.foodMaxAmount, 0.1f,
                        0.1f, 5.0f);
-      ImGui::DragFloat("Consumption Radius",
-                       &simulation.params.foodConsumptionRadius, 0.1f, 0.5f,
-                       10.0f);
     }
   }
 
   // === GOAL SYSTEM ===
-  if (ImGui::CollapsingHeader("Goal Seeking", ImGuiTreeNodeFlags_DefaultOpen)) {
+  if (ImGui::CollapsingHeader("Goal/Target")) {
     bool changed = false;
     const char* goalModes[] = {"None", "Circle", "Box", "Text 'HI'",
                                "Image (BMP)"};
-    if (ImGui::Combo("Goal Pattern", &simulation.params.goalMode, goalModes,
+    if (ImGui::Combo("Pattern", &simulation.params.goalMode, goalModes,
                      5)) {
       changed = true;
     }
 
     if (simulation.params.goalMode == 4) {
-      if (ImGui::InputText("BMP Filename", simulation.params.goalImagePath,
-                           256)) {
-        // Delay update until button press or Enter?
-        // InputText returns true on Enter or lost focus with change
-      }
+      ImGui::InputText("BMP File", simulation.params.goalImagePath, 256);
       if (ImGui::Button("Reload Image")) {
         changed = true;
       }
-      ImGui::SameLine();
-      ImGui::TextDisabled("(Supports 24-bit .bmp)");
     }
 
-    ImGui::DragFloat("Attraction Strength", &simulation.params.goalStrength,
+    ImGui::DragFloat("Attraction", &simulation.params.goalStrength,
                      0.01f, 0.0f, 2.0f);
 
     if (changed) {
@@ -1255,39 +1282,50 @@ void renderUI() {
   }
 
   // === VISUALIZATION ===
-  if (ImGui::CollapsingHeader("Visualization",
-                              ImGuiTreeNodeFlags_DefaultOpen)) {
-    ImGui::Checkbox("3D View", &simulation.params.view3D);
+  if (ImGui::CollapsingHeader("Visualization", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Checkbox("3D Render", &simulation.params.view3D);
 
     if (simulation.params.view3D) {
       ImGui::Indent();
-      ImGui::TextDisabled("Camera Controls");
-      ImGui::DragFloat("Camera Angle", &simulation.params.cameraAngle, 1.0f,
-                       5.0f, 89.0f);
-      ImGui::DragFloat("Camera Rotation", &simulation.params.cameraRotation,
-                       2.0f, 0.0f, 360.0f);
-      ImGui::DragFloat("Camera Distance", &simulation.params.cameraDistance,
+      ImGui::DragFloat("Camera Dist", &simulation.params.cameraDistance,
                        1.0f, 10.0f, 200.0f);
-
-      ImGui::Spacing();
-      ImGui::TextDisabled("Particles");
       ImGui::DragFloat("Particle Size", &simulation.params.particleSize, 1.0f,
                        1.0f, 50.0f);
-      ImGui::DragFloat("Glow Intensity", &simulation.params.glowIntensity, 0.1f,
+      ImGui::DragFloat("Glow", &simulation.params.glowIntensity, 0.1f,
                        0.0f, 3.0f);
       ImGui::Unindent();
     } else {
-      ImGui::Checkbox("Render Field Overlay", &simulation.params.showFields);
-      const char* fieldModes[] = {"Off", "Density Field", "Separation Field",
-                                  "Growth Field", "Energy Landscape"};
-      ImGui::Combo("Field Mode", &simulation.params.fieldType, fieldModes, 5);
+      ImGui::Checkbox("Fields Overlay", &simulation.params.showFields);
+      const char* fieldModes[] = {"Off", "Density", "Separation",
+                                  "Growth", "Energy"};
+      ImGui::Combo("Field Type", &simulation.params.fieldType, fieldModes, 5);
     }
 
-    ImGui::DragFloat("View Scale", &simulation.params.zoom, 0.05f, 0.1f, 5.0f);
+    ImGui::DragFloat("Zoom", &simulation.params.zoom, 0.05f, 0.1f, 5.0f);
   }
 
   ImGui::Separator();
-  ImGui::TextDisabled("Camera: WASD = Rotate | Q/E = Zoom | Scroll = Zoom");
+  ImGui::TextDisabled("Controls: WASD=Cam | Q/E=Zoom");
+  ImGui::TextDisabled("Mouse: Left Click to Interact");
+
+  // === LIVE STATS ===
+  float avail = ImGui::GetContentRegionAvail().y;
+  if (avail > 160) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + avail - 160);
+  
+  ImGui::Separator();
+  ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1.0f), "LIVE ANALYTICS");
+  
+  if (!simulation.historyAlive.empty()) {
+      char overlay[32];
+      
+      sprintf(overlay, "Pop: %d", (int)simulation.historyAlive.back());
+      ImGui::PlotLines("", simulation.historyAlive.data(), (int)simulation.historyAlive.size(), 0, overlay, 0.0f, (float)simulation.params.maxParticles, ImVec2(ImGui::GetContentRegionAvail().x, 60));
+      
+      sprintf(overlay, "Avg Energy: %.2f", simulation.historyEnergy.back());
+      ImGui::PlotLines("", simulation.historyEnergy.data(), (int)simulation.historyEnergy.size(), 0, overlay, 0.0f, 1.0f, ImVec2(ImGui::GetContentRegionAvail().x, 60));
+  } else {
+      ImGui::TextDisabled("Collecting data...");
+  }
 
   ImGui::End();
 
