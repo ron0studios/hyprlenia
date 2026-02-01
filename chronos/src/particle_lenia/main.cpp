@@ -23,6 +23,8 @@
 #include <random>
 #include <vector>
 #include <omp.h>
+#include <fstream>
+#include <cstring>
 
 #include "core/Buffer.h"
 #include "core/ComputeShader.h"
@@ -96,6 +98,19 @@ struct SimulationParams {
   bool showWireframe = false;     // Show terrain wireframe
   float ambientLight = 0.5f;      // Ambient lighting (higher for visibility)
   float particleSize = 20.0f;     // 3D particle size
+
+  // Interaction
+  int interactionMode = 0; // 0=None, 1=Spawn, 2=Repel, 3=Attract, 4=Spawn Orbium
+  float brushRadius = 5.0f;
+  float forceStrength = 0.5f;
+
+  // Goal System
+  int goalMode = 0; // 0=None, 1=Circle, 2=Box, 3=Text, 4=Image
+  float goalStrength = 0.1f;
+  char goalImagePath[256] = "goal.bmp";
+  
+  // Render settings
+  bool showGoal = false;
 };
 
 // Particle structure (must match shader) - 14 floats total
@@ -139,6 +154,10 @@ class ParticleLeniaSimulation {
   GLuint foodTexture = 0;
   int foodGridSize = 128;  // 128x128 food grid
 
+  // Goal system resources
+  GLuint goalTexture = 0;
+  int goalGridSize = 512;
+
   std::mt19937 rng;
 
   // Stats
@@ -175,6 +194,136 @@ class ParticleLeniaSimulation {
 
     // Initialize food system
     initFood();
+    
+    // Initialize goal system
+    initGoal();
+  }
+
+  void initGoal() {
+      glGenTextures(1, &goalTexture);
+      glBindTexture(GL_TEXTURE_2D, goalTexture);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_R16F, goalGridSize, goalGridSize,
+                   0, GL_RED, GL_FLOAT, nullptr);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      
+      updateGoalTexture();
+  }
+
+  bool loadBMP(const char* filename, std::vector<float>& outData, int size) {
+      std::ifstream file(filename, std::ios::binary);
+      if (!file) {
+          std::cout << "Failed to open image: " << filename << std::endl;
+          return false;
+      }
+      unsigned char header[54];
+      if (!file.read(reinterpret_cast<char*>(header), 54)) return false;
+      if (header[0] != 'B' || header[1] != 'M') return false;
+      int width = *(int*)&header[18];
+      int height = *(int*)&header[22];
+      int imageSize = *(int*)&header[34];  
+      if (imageSize == 0) imageSize = width * height * 3;
+      int dataPos = *(int*)&header[10];
+      if (dataPos == 0) dataPos = 54;
+      std::vector<unsigned char> img(imageSize);
+      file.seekg(dataPos);
+      file.read(reinterpret_cast<char*>(img.data()), imageSize);
+      file.close();
+      
+      outData.resize(size * size);
+      
+      #pragma omp parallel for collapse(2)
+      for(int y=0; y<size; y++) {
+          for(int x=0; x<size; x++) {
+              int srcX = x * width / size;
+              int srcY = (size - 1 - y) * height / size; // Flip Y for GL
+              if (srcX >= width) srcX = width - 1;
+              if (srcY >= height) srcY = height - 1;
+              int idx = (srcY * width + srcX) * 3;
+              if (idx < imageSize - 2) {
+                 float val = (img[idx+2] + img[idx+1] + img[idx]) / (3.0f * 255.0f);
+                 outData[y*size + x] = val;
+              }
+          }
+      }
+      return true;
+  }
+
+  void updateGoalTexture() {
+      std::vector<float> data(goalGridSize * goalGridSize, 0.0f);
+      
+      if (params.goalMode == 1) { // Circle
+          float cx = goalGridSize / 2.0f;
+          float cy = goalGridSize / 2.0f;
+          float r = goalGridSize * 0.3f;
+          float thickness = goalGridSize * 0.05f;
+          
+          #pragma omp parallel for collapse(2)
+          for(int y=0; y<goalGridSize; y++) {
+              for(int x=0; x<goalGridSize; x++) {
+                  float dx = x - cx;
+                  float dy = y - cy;
+                  float dist = sqrt(dx*dx + dy*dy);
+                  float val = exp(-pow(dist - r, 2) / (2.0f * thickness * thickness));
+                  data[y*goalGridSize + x] = val;
+              }
+          }
+      } 
+      else if (params.goalMode == 2) { // Box
+          float margin = goalGridSize * 0.2f;
+           #pragma omp parallel for collapse(2)
+          for(int y=0; y<goalGridSize; y++) {
+              for(int x=0; x<goalGridSize; x++) {
+                  if (x > margin && x < goalGridSize - margin && 
+                      y > margin && y < goalGridSize - margin) {
+                      
+                      float dx = std::min(std::min(x - margin, goalGridSize - margin - x), 
+                                     std::min(y - margin, goalGridSize - margin - y));
+                                     
+                      if (dx < 20.0f) data[y*goalGridSize + x] = 1.0f;
+                  }
+              }
+          }
+      }
+      else if (params.goalMode == 3) { // Text "HI"
+         // Simple pixel drawing
+         int w = goalGridSize;
+         auto drawRect = [&](int x, int y, int rw, int rh) {
+             for(int iy=y; iy<y+rh; iy++) {
+                 for(int ix=x; ix<x+rw; ix++) {
+                     if(ix>=0 && ix<w && iy>=0 && iy<w)
+                        data[iy*w + ix] = 1.0f;
+                 }
+             }
+         };
+         
+         int s = w / 10; // scale
+         int thick = s/2;
+         // H
+         drawRect(2*s, 3*s, thick, 4*s);
+         drawRect(4*s, 3*s, thick, 4*s);
+         drawRect(2*s, 5*s, 2*s + thick, thick);
+         // I
+         drawRect(6*s, 3*s, thick, 4*s);
+      }
+      else if (params.goalMode == 4) { // Image
+          if (!loadBMP(params.goalImagePath, data, goalGridSize)) {
+               // Fallback X pattern
+               #pragma omp parallel for collapse(2)
+               for(int y=0; y<goalGridSize; y++) {
+                   for(int x=0; x<goalGridSize; x++) {
+                       if (abs(x-y) < 20 || abs(x-(goalGridSize-y)) < 20)
+                          data[y*goalGridSize+x] = 1.0f;
+                   }
+               }
+          }
+      }
+      
+      glBindTexture(GL_TEXTURE_2D, goalTexture);
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, goalGridSize, goalGridSize,
+                      GL_RED, GL_FLOAT, data.data());
   }
 
   void initFood() {
@@ -380,6 +529,13 @@ class ParticleLeniaSimulation {
     if (params.foodEnabled) {
       glBindImageTexture(0, foodTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA16F);
     }
+    
+    // Bind Goal Texture
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, goalTexture);
+    stepShader.setUniform("u_GoalTexture", 1);
+    stepShader.setUniform("u_GoalMode", params.goalMode);
+    stepShader.setUniform("u_GoalStrength", params.goalStrength);
 
     // Bind uniforms
     stepShader.setUniform("u_NumParticles", params.maxParticles);
@@ -620,6 +776,45 @@ class ParticleLeniaSimulation {
       }
     }
   }
+
+  void spawnOrbium(float x, float y, float z) {
+      // Spawn a cluster of particles that should form a soliton
+      int count = 40;
+      float radius = 3.0f;
+      
+      for(int i=0; i<count; i++) {
+          std::uniform_real_distribution<float> dist(-radius, radius);
+          addParticle(x + dist(rng), y + dist(rng), z + dist(rng));
+      }
+  }
+
+  void applyForce(float x, float y, float z, float strength, float radius) {
+    Buffer& activeBuffer = useBufferA ? particleBufferA : particleBufferB;
+    std::vector<float> data = activeBuffer.getData();
+
+    for (int i = 0; i < params.maxParticles; i++) {
+        int base = i * PARTICLE_FLOATS;
+        if (data[base + 6] > 0.01f) {
+            float dx = data[base + 0] - x;
+            float dy = data[base + 1] - y;
+            float dz = data[base + 2] - z;
+            float dist2 = dx*dx + dy*dy + dz*dz;
+            
+            if (dist2 < radius * radius) {
+                float dist = sqrt(dist2);
+                float force = strength * (1.0f - dist/radius);
+                if (dist > 0.001f) {
+                    data[base + 3] += (dx / dist) * force;
+                    data[base + 4] += (dy / dist) * force;
+                    data[base + 5] += (dz / dist) * force;
+                }
+            }
+        }
+    }
+    activeBuffer.setData(data);
+    Buffer& otherBuffer = useBufferA ? particleBufferB : particleBufferA;
+    otherBuffer.setData(data);
+  }
 };
 
 // Global simulation
@@ -791,7 +986,7 @@ void renderUI() {
       ImGui::Spacing();
       ImGui::TextDisabled("Population Dynamics");
       ImGui::DragFloat("Reproduction Chance", &simulation.params.birthRate,
-                       0.0001f, 0.0f, 0.01f, "%.5f");
+             0.0001f, 0.0f, 0.01f, "%.5f");
       ImGui::DragFloat("Mortality Baseline", &simulation.params.deathRate,
                        0.0001f, 0.0f, 0.01f, "%.5f");
 
@@ -827,6 +1022,33 @@ void renderUI() {
       ImGui::DragFloat("Consumption Radius", &simulation.params.foodConsumptionRadius,
                        0.1f, 0.5f, 10.0f);
     }
+  }
+
+  // === GOAL SYSTEM ===
+  if (ImGui::CollapsingHeader("Goal Seeking", ImGuiTreeNodeFlags_DefaultOpen)) {
+      bool changed = false;
+      const char* goalModes[] = {"None", "Circle", "Box", "Text 'HI'", "Image (BMP)"};
+      if (ImGui::Combo("Goal Pattern", &simulation.params.goalMode, goalModes, 5)) {
+          changed = true;
+      }
+      
+      if (simulation.params.goalMode == 4) {
+          if (ImGui::InputText("BMP Filename", simulation.params.goalImagePath, 256)) {
+             // Delay update until button press or Enter? 
+             // InputText returns true on Enter or lost focus with change
+          }
+          if (ImGui::Button("Reload Image")) {
+              changed = true;
+          }
+          ImGui::SameLine();
+          ImGui::TextDisabled("(Supports 24-bit .bmp)");
+      }
+      
+      ImGui::DragFloat("Attraction Strength", &simulation.params.goalStrength, 0.01f, 0.0f, 2.0f);
+      
+      if (changed) {
+          simulation.updateGoalTexture();
+      }
   }
 
   // === VISUALIZATION ===

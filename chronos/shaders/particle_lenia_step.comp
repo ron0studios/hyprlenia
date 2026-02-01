@@ -30,6 +30,11 @@ layout(std430, binding = 1) buffer ParticlesOut { float particlesOut[]; };
 // Food texture - read/write for consumption
 layout(rgba16f, binding = 0) uniform image2D u_FoodTexture;
 
+// Goal Texture
+layout(binding = 1) uniform sampler2D u_GoalTexture;
+uniform int u_GoalMode;
+uniform float u_GoalStrength;
+
 // Shared memory for particle data (3D position + energy)
 shared vec4 tileData[128];  // xyz = position, w = energy
 
@@ -267,6 +272,42 @@ void main() {
 
   // Update position: move against gradient (3D)
   vec3 newPos = myPos - u_Dt * gradE;
+
+  // === GOAL ATTRACTION ===
+  if (u_GoalMode > 0 && u_GoalStrength > 0.001) {
+      // Map world pos to UV [0,1]
+      vec2 uv = (myPos.xy + vec2(u_WorldWidth, u_WorldHeight) * 0.5) / vec2(u_WorldWidth, u_WorldHeight);
+      
+      // Calculate gradient with central difference
+      float eps = 0.01;
+      float valC = texture(u_GoalTexture, uv).r;
+      float valR = texture(u_GoalTexture, uv + vec2(eps, 0.0)).r;
+      float valL = texture(u_GoalTexture, uv - vec2(eps, 0.0)).r;
+      float valT = texture(u_GoalTexture, uv + vec2(0.0, eps)).r;
+      float valB = texture(u_GoalTexture, uv - vec2(0.0, eps)).r;
+      
+      vec2 grad = vec2(valR - valL, valT - valB) / (2.0 * eps);
+      
+      // Clamp gradient magnitude to prevent explosions
+      float gradLen = length(grad);
+      if (gradLen > 1.0) grad = normalize(grad);
+      
+      // "Pull": continuous subtle force towards the goal
+      // Reduced scale to prevent "teleporting"
+      vec2 force = grad * u_GoalStrength * u_Dt * 1.5;
+      
+      // "Push": chaos/agitation when far from goal (low value)
+      // If we are in the dark, move randomly to find the light
+      if (valC < 0.5) {
+          float agitation = (1.0 - valC) * u_GoalStrength * u_Dt * 5.0; // Stronger agitation
+          float r1 = random(int(idx), 100 + u_RandomSeed) * 2.0 - 1.0;
+          float r2 = random(int(idx), 101 + u_RandomSeed) * 2.0 - 1.0;
+          force += vec2(r1, r2) * agitation;
+      }
+      
+      newPos.xy += force;
+  }
+
   newPos = wrapPos(newPos);
 
   // Update velocity (3D)
@@ -285,6 +326,18 @@ void main() {
 
     // === ENERGY DECAY ===
     float energyLoss = u_EnergyDecay;
+    
+    // === GOAL-BASED SELECTION ===
+    // Particles in dark areas of the goal texture lose energy faster
+    if (u_GoalMode > 0 && u_GoalStrength > 0.001) {
+        vec2 uv = (myPos.xy + vec2(u_WorldWidth, u_WorldHeight) * 0.5) / vec2(u_WorldWidth, u_WorldHeight);
+        if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0) {
+            float goalVal = texture(u_GoalTexture, uv).r;
+            // Quadratic penalty: mild for near-misses, severe for total darkness
+            float penalty = pow(1.0 - goalVal, 2.0) * 0.05 * u_GoalStrength; 
+            energyLoss += penalty;
+        }
+    }
 
     // Age-based senescence
     if (myAge > 3000.0) {
