@@ -65,7 +65,8 @@ uniform float u_FoodConsumptionRadius;
 
 // Convert world position to food texture coordinates (XY plane projection)
 ivec2 worldToFoodTexel(vec3 worldPos) {
-  vec2 uv = (worldPos.xy + vec2(u_WorldWidth, u_WorldHeight) * 0.5) / vec2(u_WorldWidth, u_WorldHeight);
+  vec2 uv = (worldPos.xy + vec2(u_WorldWidth, u_WorldHeight) * 0.5) /
+            vec2(u_WorldWidth, u_WorldHeight);
   uv = clamp(uv, 0.0, 0.999);
   return ivec2(uv * float(u_FoodGridSize));
 }
@@ -98,14 +99,20 @@ vec3 wrappedDelta(vec3 from, vec3 to) {
   float halfH = u_WorldHeight * 0.5;
   float halfD = u_WorldDepth * 0.5;
 
-  if (d.x > halfW) d.x -= u_WorldWidth;
-  else if (d.x < -halfW) d.x += u_WorldWidth;
+  if (d.x > halfW)
+    d.x -= u_WorldWidth;
+  else if (d.x < -halfW)
+    d.x += u_WorldWidth;
 
-  if (d.y > halfH) d.y -= u_WorldHeight;
-  else if (d.y < -halfH) d.y += u_WorldHeight;
+  if (d.y > halfH)
+    d.y -= u_WorldHeight;
+  else if (d.y < -halfH)
+    d.y += u_WorldHeight;
 
-  if (d.z > halfD) d.z -= u_WorldDepth;
-  else if (d.z < -halfD) d.z += u_WorldDepth;
+  if (d.z > halfD)
+    d.z -= u_WorldDepth;
+  else if (d.z < -halfD)
+    d.z += u_WorldDepth;
 
   return d;
 }
@@ -183,8 +190,10 @@ void main() {
   int base = i * 14;  // 14 floats per particle
 
   // Read my particle data (3D)
-  vec3 myPos = vec3(particlesIn[base], particlesIn[base + 1], particlesIn[base + 2]);
-  vec3 myVel = vec3(particlesIn[base + 3], particlesIn[base + 4], particlesIn[base + 5]);
+  vec3 myPos =
+      vec3(particlesIn[base], particlesIn[base + 1], particlesIn[base + 2]);
+  vec3 myVel =
+      vec3(particlesIn[base + 3], particlesIn[base + 4], particlesIn[base + 5]);
   float myEnergy = particlesIn[base + 6];
   float mySpecies = particlesIn[base + 7];
   float myAge = particlesIn[base + 8];
@@ -226,10 +235,10 @@ void main() {
     int loadIdx = t * 128 + int(localIdx);
     if (loadIdx < u_NumParticles) {
       int loadBase = loadIdx * 14;
-      tileData[localIdx] = vec4(particlesIn[loadBase],      // x
-                                particlesIn[loadBase + 1],  // y
-                                particlesIn[loadBase + 2],  // z
-                                particlesIn[loadBase + 6]); // energy
+      tileData[localIdx] = vec4(particlesIn[loadBase],       // x
+                                particlesIn[loadBase + 1],   // y
+                                particlesIn[loadBase + 2],   // z
+                                particlesIn[loadBase + 6]);  // energy
     } else {
       tileData[localIdx] = vec4(0.0);
     }
@@ -260,11 +269,7 @@ void main() {
 
   // Central difference gradient (3D)
   float h2 = 2.0 * h;
-  vec3 gradE = vec3(
-    (E_xp - E_xn) / h2,
-    (E_yp - E_yn) / h2,
-    (E_zp - E_zn) / h2
-  );
+  vec3 gradE = vec3((E_xp - E_xn) / h2, (E_yp - E_yn) / h2, (E_zp - E_zn) / h2);
 
   // Growth value at center (for evolution)
   float diff = UR_c.x - u_MuG;
@@ -275,37 +280,39 @@ void main() {
 
   // === GOAL ATTRACTION ===
   if (u_GoalMode > 0 && u_GoalStrength > 0.001) {
-      // Map world pos to UV [0,1]
-      vec2 uv = (myPos.xy + vec2(u_WorldWidth, u_WorldHeight) * 0.5) / vec2(u_WorldWidth, u_WorldHeight);
-      
-      // Calculate gradient with central difference
-      float eps = 0.01;
-      float valC = texture(u_GoalTexture, uv).r;
-      float valR = texture(u_GoalTexture, uv + vec2(eps, 0.0)).r;
-      float valL = texture(u_GoalTexture, uv - vec2(eps, 0.0)).r;
-      float valT = texture(u_GoalTexture, uv + vec2(0.0, eps)).r;
-      float valB = texture(u_GoalTexture, uv - vec2(0.0, eps)).r;
-      
-      vec2 grad = vec2(valR - valL, valT - valB) / (2.0 * eps);
-      
-      // Clamp gradient magnitude to prevent explosions
-      float gradLen = length(grad);
-      if (gradLen > 1.0) grad = normalize(grad);
-      
-      // "Pull": continuous subtle force towards the goal
-      // Reduced scale to prevent "teleporting"
-      vec2 force = grad * u_GoalStrength * u_Dt * 1.5;
-      
-      // "Push": chaos/agitation when far from goal (low value)
-      // If we are in the dark, move randomly to find the light
-      if (valC < 0.5) {
-          float agitation = (1.0 - valC) * u_GoalStrength * u_Dt * 5.0; // Stronger agitation
-          float r1 = random(int(idx), 100 + u_RandomSeed) * 2.0 - 1.0;
-          float r2 = random(int(idx), 101 + u_RandomSeed) * 2.0 - 1.0;
-          force += vec2(r1, r2) * agitation;
-      }
-      
-      newPos.xy += force;
+    // Map world pos to UV [0,1]
+    vec2 uv = (myPos.xy + vec2(u_WorldWidth, u_WorldHeight) * 0.5) /
+              vec2(u_WorldWidth, u_WorldHeight);
+
+    // Calculate gradient with central difference
+    float eps = 0.01;
+    float valC = texture(u_GoalTexture, uv).r;
+    float valR = texture(u_GoalTexture, uv + vec2(eps, 0.0)).r;
+    float valL = texture(u_GoalTexture, uv - vec2(eps, 0.0)).r;
+    float valT = texture(u_GoalTexture, uv + vec2(0.0, eps)).r;
+    float valB = texture(u_GoalTexture, uv - vec2(0.0, eps)).r;
+
+    vec2 grad = vec2(valR - valL, valT - valB) / (2.0 * eps);
+
+    // Clamp gradient magnitude to prevent explosions
+    float gradLen = length(grad);
+    if (gradLen > 1.0) grad = normalize(grad);
+
+    // "Pull": continuous subtle force towards the goal
+    // Reduced scale to prevent "teleporting"
+    vec2 force = grad * u_GoalStrength * u_Dt * 1.5;
+
+    // "Push": chaos/agitation when far from goal (low value)
+    // If we are in the dark, move randomly to find the light
+    if (valC < 0.5) {
+      float agitation =
+          (1.0 - valC) * u_GoalStrength * u_Dt * 5.0;  // Stronger agitation
+      float r1 = random(int(idx), 100 + u_RandomSeed) * 2.0 - 1.0;
+      float r2 = random(int(idx), 101 + u_RandomSeed) * 2.0 - 1.0;
+      force += vec2(r1, r2) * agitation;
+    }
+
+    newPos.xy += force;
   }
 
   newPos = wrapPos(newPos);
@@ -326,17 +333,18 @@ void main() {
 
     // === ENERGY DECAY ===
     float energyLoss = u_EnergyDecay;
-    
+
     // === GOAL-BASED SELECTION ===
     // Particles in dark areas of the goal texture lose energy faster
     if (u_GoalMode > 0 && u_GoalStrength > 0.001) {
-        vec2 uv = (myPos.xy + vec2(u_WorldWidth, u_WorldHeight) * 0.5) / vec2(u_WorldWidth, u_WorldHeight);
-        if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0) {
-            float goalVal = texture(u_GoalTexture, uv).r;
-            // Quadratic penalty: mild for near-misses, severe for total darkness
-            float penalty = pow(1.0 - goalVal, 2.0) * 0.05 * u_GoalStrength; 
-            energyLoss += penalty;
-        }
+      vec2 uv = (myPos.xy + vec2(u_WorldWidth, u_WorldHeight) * 0.5) /
+                vec2(u_WorldWidth, u_WorldHeight);
+      if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0) {
+        float goalVal = texture(u_GoalTexture, uv).r;
+        // Quadratic penalty: mild for near-misses, severe for total darkness
+        float penalty = pow(1.0 - goalVal, 2.0) * 0.05 * u_GoalStrength;
+        energyLoss += penalty;
+      }
     }
 
     // Age-based senescence
@@ -359,7 +367,8 @@ void main() {
 
     // === REPRODUCTION ===
     if (myEnergy > 0.80 && foodConsumed > 0.001) {
-      float reproChance = (myEnergy - 0.80) * 0.5 * min(foodConsumed * 10.0, 1.0);
+      float reproChance =
+          (myEnergy - 0.80) * 0.5 * min(foodConsumed * 10.0, 1.0);
 
       if (random(i, 1) < reproChance) {
         for (int j = 0; j < u_NumParticles; j++) {
@@ -368,15 +377,12 @@ void main() {
             int childBase = j * 14;
 
             // Random direction in 3D (spherical)
-            float theta = random(i, 2) * 6.28318;  // azimuth
+            float theta = random(i, 2) * 6.28318;        // azimuth
             float phi = acos(2.0 * random(i, 3) - 1.0);  // polar
             float spawnDist = 0.5 + random(i, 4) * 0.5;
 
-            vec3 spawnDir = vec3(
-              sin(phi) * cos(theta),
-              sin(phi) * sin(theta),
-              cos(phi)
-            );
+            vec3 spawnDir =
+                vec3(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));
             vec3 childPos = wrapPos(myPos + spawnDir * spawnDist);
 
             particlesOut[childBase + 0] = childPos.x;
@@ -386,12 +392,14 @@ void main() {
             particlesOut[childBase + 4] = myVel.y * 0.5;
             particlesOut[childBase + 5] = myVel.z * 0.5;
             particlesOut[childBase + 6] = 0.35;
-            particlesOut[childBase + 7] = mySpecies + (random(i, 5) - 0.5) * 0.1;
+            particlesOut[childBase + 7] =
+                mySpecies + (random(i, 5) - 0.5) * 0.1;
             particlesOut[childBase + 8] = 0.0;
 
             for (int d = 0; d < 5; d++) {
               float mut = (random(i, 6 + d) - 0.5) * u_MutationRate;
-              particlesOut[childBase + 9 + d] = clamp(myDna[d] + mut, -0.5, 0.5);
+              particlesOut[childBase + 9 + d] =
+                  clamp(myDna[d] + mut, -0.5, 0.5);
             }
 
             myEnergy -= 0.35;

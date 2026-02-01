@@ -16,15 +16,16 @@
 #include <imgui/imgui.h>
 #include <imgui/imgui_impl_glfw.h>
 #include <imgui/imgui_impl_opengl3.h>
+#include <omp.h>
 
 #include <chrono>
 #include <cmath>
+#include <cstring>
+#include <fstream>
 #include <iostream>
 #include <random>
 #include <vector>
-#include <omp.h>
-#include <fstream>
-#include <cstring>
+#include <sstream>
 
 #include "core/Buffer.h"
 #include "core/ComputeShader.h"
@@ -82,46 +83,48 @@ struct SimulationParams {
 
   // Food system parameters
   bool foodEnabled = true;
-  float foodSpawnRate = 0.002f;     // Probability of food spawning per cell per step
-  float foodDecayRate = 0.001f;     // How fast food decays naturally
-  float foodMaxAmount = 1.0f;       // Maximum food per cell
+  float foodSpawnRate =
+      0.002f;  // Probability of food spawning per cell per step
+  float foodDecayRate = 0.001f;        // How fast food decays naturally
+  float foodMaxAmount = 1.0f;          // Maximum food per cell
   float foodConsumptionRadius = 2.0f;  // How far particles can reach to eat
-  bool showFood = true;             // Show food on display
+  bool showFood = true;                // Show food on display
 
   // 3D Rendering
-  bool view3D = true;  // Default to 3D mode
-  float cameraAngle = 45.0f;      // Degrees from horizontal
-  float cameraRotation = 0.0f;    // Rotation around Y axis
-  float cameraDistance = 60.0f;   // Distance from center
-  float heightScale = 10.0f;      // Height multiplier for terrain
-  float glowIntensity = 1.5f;     // Glow effect strength
-  bool showWireframe = false;     // Show terrain wireframe
-  float ambientLight = 0.5f;      // Ambient lighting (higher for visibility)
-  float particleSize = 20.0f;     // 3D particle size
+  bool view3D = true;            // Default to 3D mode
+  float cameraAngle = 45.0f;     // Degrees from horizontal
+  float cameraRotation = 0.0f;   // Rotation around Y axis
+  float cameraDistance = 60.0f;  // Distance from center
+  float heightScale = 10.0f;     // Height multiplier for terrain
+  float glowIntensity = 1.5f;    // Glow effect strength
+  bool showWireframe = false;    // Show terrain wireframe
+  float ambientLight = 0.5f;     // Ambient lighting (higher for visibility)
+  float particleSize = 20.0f;    // 3D particle size
 
   // Interaction
-  int interactionMode = 0; // 0=None, 1=Spawn, 2=Repel, 3=Attract, 4=Spawn Orbium
+  int interactionMode =
+      0;  // 0=None, 1=Spawn, 2=Repel, 3=Attract, 4=Spawn Orbium
   float brushRadius = 5.0f;
   float forceStrength = 0.5f;
 
   // Goal System
-  int goalMode = 0; // 0=None, 1=Circle, 2=Box, 3=Text, 4=Image
+  int goalMode = 0;  // 0=None, 1=Circle, 2=Box, 3=Text, 4=Image
   float goalStrength = 0.1f;
   char goalImagePath[256] = "goal.bmp";
-  
+
   // Render settings
   bool showGoal = false;
 };
 
 // Particle structure (must match shader) - 14 floats total
 struct Particle {
-  float x, y, z;      // Position (3D)
-  float vx, vy, vz;   // Velocity (3D)
-  float energy;       // Health/energy [0, 1]
-  float species;      // Species ID (affects color)
-  float age;          // Age in simulation steps
-  float dna[5];       // Genetic parameters (mu_k, sigma_k2, mu_g, sigma_g2, c_rep
-                      // variations)
+  float x, y, z;     // Position (3D)
+  float vx, vy, vz;  // Velocity (3D)
+  float energy;      // Health/energy [0, 1]
+  float species;     // Species ID (affects color)
+  float age;         // Age in simulation steps
+  float dna[5];  // Genetic parameters (mu_k, sigma_k2, mu_g, sigma_g2, c_rep
+                 // variations)
 };
 
 constexpr int PARTICLE_FLOATS = 14;  // Number of floats per particle
@@ -194,136 +197,268 @@ class ParticleLeniaSimulation {
 
     // Initialize food system
     initFood();
-    
+
     // Initialize goal system
     initGoal();
   }
 
   void initGoal() {
-      glGenTextures(1, &goalTexture);
-      glBindTexture(GL_TEXTURE_2D, goalTexture);
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_R16F, goalGridSize, goalGridSize,
-                   0, GL_RED, GL_FLOAT, nullptr);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-      
-      updateGoalTexture();
+    glGenTextures(1, &goalTexture);
+    glBindTexture(GL_TEXTURE_2D, goalTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R16F, goalGridSize, goalGridSize, 0,
+                 GL_RED, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    updateGoalTexture();
   }
 
   bool loadBMP(const char* filename, std::vector<float>& outData, int size) {
-      std::ifstream file(filename, std::ios::binary);
-      if (!file) {
-          std::cout << "Failed to open image: " << filename << std::endl;
-          return false;
+    std::ifstream file(filename, std::ios::binary);
+    if (!file) {
+      std::cout << "Failed to open image: " << filename << std::endl;
+      return false;
+    }
+    unsigned char header[54];
+    if (!file.read(reinterpret_cast<char*>(header), 54)) return false;
+    if (header[0] != 'B' || header[1] != 'M') return false;
+    int width = *(int*)&header[18];
+    int height = *(int*)&header[22];
+    int imageSize = *(int*)&header[34];
+    if (imageSize == 0) imageSize = width * height * 3;
+    int dataPos = *(int*)&header[10];
+    if (dataPos == 0) dataPos = 54;
+    std::vector<unsigned char> img(imageSize);
+    file.seekg(dataPos);
+    file.read(reinterpret_cast<char*>(img.data()), imageSize);
+    file.close();
+
+    outData.resize(size * size);
+
+#pragma omp parallel for collapse(2)
+    for (int y = 0; y < size; y++) {
+      for (int x = 0; x < size; x++) {
+        int srcX = x * width / size;
+        int srcY = (size - 1 - y) * height / size;  // Flip Y for GL
+        if (srcX >= width) srcX = width - 1;
+        if (srcY >= height) srcY = height - 1;
+        int idx = (srcY * width + srcX) * 3;
+        if (idx < imageSize - 2) {
+          float val =
+              (img[idx + 2] + img[idx + 1] + img[idx]) / (3.0f * 255.0f);
+          outData[y * size + x] = val;
+        }
       }
-      unsigned char header[54];
-      if (!file.read(reinterpret_cast<char*>(header), 54)) return false;
-      if (header[0] != 'B' || header[1] != 'M') return false;
-      int width = *(int*)&header[18];
-      int height = *(int*)&header[22];
-      int imageSize = *(int*)&header[34];  
-      if (imageSize == 0) imageSize = width * height * 3;
-      int dataPos = *(int*)&header[10];
-      if (dataPos == 0) dataPos = 54;
-      std::vector<unsigned char> img(imageSize);
-      file.seekg(dataPos);
-      file.read(reinterpret_cast<char*>(img.data()), imageSize);
-      file.close();
-      
-      outData.resize(size * size);
-      
-      #pragma omp parallel for collapse(2)
-      for(int y=0; y<size; y++) {
-          for(int x=0; x<size; x++) {
-              int srcX = x * width / size;
-              int srcY = (size - 1 - y) * height / size; // Flip Y for GL
-              if (srcX >= width) srcX = width - 1;
-              if (srcY >= height) srcY = height - 1;
-              int idx = (srcY * width + srcX) * 3;
-              if (idx < imageSize - 2) {
-                 float val = (img[idx+2] + img[idx+1] + img[idx]) / (3.0f * 255.0f);
-                 outData[y*size + x] = val;
-              }
-          }
-      }
-      return true;
+    }
+    return true;
   }
 
   void updateGoalTexture() {
-      std::vector<float> data(goalGridSize * goalGridSize, 0.0f);
-      
-      if (params.goalMode == 1) { // Circle
-          float cx = goalGridSize / 2.0f;
-          float cy = goalGridSize / 2.0f;
-          float r = goalGridSize * 0.3f;
-          float thickness = goalGridSize * 0.05f;
-          
-          #pragma omp parallel for collapse(2)
-          for(int y=0; y<goalGridSize; y++) {
-              for(int x=0; x<goalGridSize; x++) {
-                  float dx = x - cx;
-                  float dy = y - cy;
-                  float dist = sqrt(dx*dx + dy*dy);
-                  float val = exp(-pow(dist - r, 2) / (2.0f * thickness * thickness));
-                  data[y*goalGridSize + x] = val;
-              }
-          }
-      } 
-      else if (params.goalMode == 2) { // Box
-          float margin = goalGridSize * 0.2f;
-           #pragma omp parallel for collapse(2)
-          for(int y=0; y<goalGridSize; y++) {
-              for(int x=0; x<goalGridSize; x++) {
-                  if (x > margin && x < goalGridSize - margin && 
-                      y > margin && y < goalGridSize - margin) {
-                      
-                      float dx = std::min(std::min(x - margin, goalGridSize - margin - x), 
-                                     std::min(y - margin, goalGridSize - margin - y));
-                                     
-                      if (dx < 20.0f) data[y*goalGridSize + x] = 1.0f;
-                  }
-              }
-          }
+    std::vector<float> data(goalGridSize * goalGridSize, 0.0f);
+
+    if (params.goalMode == 1) {  // Circle
+      float cx = goalGridSize / 2.0f;
+      float cy = goalGridSize / 2.0f;
+      float r = goalGridSize * 0.3f;
+      float thickness = goalGridSize * 0.05f;
+
+#pragma omp parallel for collapse(2)
+      for (int y = 0; y < goalGridSize; y++) {
+        for (int x = 0; x < goalGridSize; x++) {
+          float dx = x - cx;
+          float dy = y - cy;
+          float dist = sqrt(dx * dx + dy * dy);
+          float val = exp(-pow(dist - r, 2) / (2.0f * thickness * thickness));
+          data[y * goalGridSize + x] = val;
+        }
       }
-      else if (params.goalMode == 3) { // Text "HI"
-         // Simple pixel drawing
-         int w = goalGridSize;
-         auto drawRect = [&](int x, int y, int rw, int rh) {
-             for(int iy=y; iy<y+rh; iy++) {
-                 for(int ix=x; ix<x+rw; ix++) {
-                     if(ix>=0 && ix<w && iy>=0 && iy<w)
-                        data[iy*w + ix] = 1.0f;
-                 }
-             }
-         };
-         
-         int s = w / 10; // scale
-         int thick = s/2;
-         // H
-         drawRect(2*s, 3*s, thick, 4*s);
-         drawRect(4*s, 3*s, thick, 4*s);
-         drawRect(2*s, 5*s, 2*s + thick, thick);
-         // I
-         drawRect(6*s, 3*s, thick, 4*s);
-      }
-      else if (params.goalMode == 4) { // Image
-          if (!loadBMP(params.goalImagePath, data, goalGridSize)) {
-               // Fallback X pattern
-               #pragma omp parallel for collapse(2)
-               for(int y=0; y<goalGridSize; y++) {
-                   for(int x=0; x<goalGridSize; x++) {
-                       if (abs(x-y) < 20 || abs(x-(goalGridSize-y)) < 20)
-                          data[y*goalGridSize+x] = 1.0f;
-                   }
-               }
+    } else if (params.goalMode == 2) {  // Box
+      float margin = goalGridSize * 0.2f;
+#pragma omp parallel for collapse(2)
+      for (int y = 0; y < goalGridSize; y++) {
+        for (int x = 0; x < goalGridSize; x++) {
+          if (x > margin && x < goalGridSize - margin && y > margin &&
+              y < goalGridSize - margin) {
+            float dx =
+                std::min(std::min(x - margin, goalGridSize - margin - x),
+                         std::min(y - margin, goalGridSize - margin - y));
+
+            if (dx < 20.0f) data[y * goalGridSize + x] = 1.0f;
           }
+        }
       }
-      
-      glBindTexture(GL_TEXTURE_2D, goalTexture);
-      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, goalGridSize, goalGridSize,
-                      GL_RED, GL_FLOAT, data.data());
+    } else if (params.goalMode == 3) {  // Text "HI"
+      // Simple pixel drawing
+      int w = goalGridSize;
+      auto drawRect = [&](int x, int y, int rw, int rh) {
+        for (int iy = y; iy < y + rh; iy++) {
+          for (int ix = x; ix < x + rw; ix++) {
+            if (ix >= 0 && ix < w && iy >= 0 && iy < w)
+              data[iy * w + ix] = 1.0f;
+          }
+        }
+      };
+
+      int s = w / 10;  // scale
+      int thick = s / 2;
+      // H
+      drawRect(2 * s, 3 * s, thick, 4 * s);
+      drawRect(4 * s, 3 * s, thick, 4 * s);
+      drawRect(2 * s, 5 * s, 2 * s + thick, thick);
+      // I
+      drawRect(6 * s, 3 * s, thick, 4 * s);
+    } else if (params.goalMode == 4) {  // Image
+      if (!loadBMP(params.goalImagePath, data, goalGridSize)) {
+// Fallback X pattern
+#pragma omp parallel for collapse(2)
+        for (int y = 0; y < goalGridSize; y++) {
+          for (int x = 0; x < goalGridSize; x++) {
+            if (abs(x - y) < 20 || abs(x - (goalGridSize - y)) < 20)
+              data[y * goalGridSize + x] = 1.0f;
+          }
+        }
+      }
+    }
+
+    glBindTexture(GL_TEXTURE_2D, goalTexture);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, goalGridSize, goalGridSize, GL_RED,
+                    GL_FLOAT, data.data());
+  }
+
+  void saveScene(const std::string& filename) {
+    std::ofstream out(filename);
+    if (!out) {
+        std::cerr << "Failed to save scene: " << filename << std::endl;
+        return;
+    }
+    
+    out << "worldWidth=" << params.worldWidth << "\n";
+    out << "worldHeight=" << params.worldHeight << "\n";
+    out << "worldDepth=" << params.worldDepth << "\n";
+    out << "numParticles=" << params.numParticles << "\n";
+    out << "maxParticles=" << params.maxParticles << "\n";
+    out << "w_k=" << params.w_k << "\n";
+    out << "mu_k=" << params.mu_k << "\n";
+    out << "sigma_k2=" << params.sigma_k2 << "\n";
+    out << "mu_g=" << params.mu_g << "\n";
+    out << "sigma_g2=" << params.sigma_g2 << "\n";
+    out << "c_rep=" << params.c_rep << "\n";
+    out << "dt=" << params.dt << "\n";
+    out << "h=" << params.h << "\n";
+    out << "evolutionEnabled=" << params.evolutionEnabled << "\n";
+    out << "birthRate=" << params.birthRate << "\n";
+    out << "deathRate=" << params.deathRate << "\n";
+    out << "mutationRate=" << params.mutationRate << "\n";
+    out << "energyDecay=" << params.energyDecay << "\n";
+    out << "energyFromGrowth=" << params.energyFromGrowth << "\n";
+    out << "translateX=" << params.translateX << "\n";
+    out << "translateY=" << params.translateY << "\n";
+    out << "translateZ=" << params.translateZ << "\n";
+    out << "zoom=" << params.zoom << "\n";
+    out << "stepsPerFrame=" << params.stepsPerFrame << "\n";
+    out << "showFields=" << params.showFields << "\n";
+    out << "fieldType=" << params.fieldType << "\n";
+    out << "foodEnabled=" << params.foodEnabled << "\n";
+    out << "foodSpawnRate=" << params.foodSpawnRate << "\n";
+    out << "foodDecayRate=" << params.foodDecayRate << "\n";
+    out << "foodMaxAmount=" << params.foodMaxAmount << "\n";
+    out << "foodConsumptionRadius=" << params.foodConsumptionRadius << "\n";
+    out << "showFood=" << params.showFood << "\n";
+    out << "view3D=" << params.view3D << "\n";
+    out << "cameraAngle=" << params.cameraAngle << "\n";
+    out << "cameraRotation=" << params.cameraRotation << "\n";
+    out << "cameraDistance=" << params.cameraDistance << "\n";
+    out << "heightScale=" << params.heightScale << "\n";
+    out << "glowIntensity=" << params.glowIntensity << "\n";
+    out << "showWireframe=" << params.showWireframe << "\n";
+    out << "ambientLight=" << params.ambientLight << "\n";
+    out << "particleSize=" << params.particleSize << "\n";
+    out << "interactionMode=" << params.interactionMode << "\n";
+    out << "brushRadius=" << params.brushRadius << "\n";
+    out << "forceStrength=" << params.forceStrength << "\n";
+    out << "goalMode=" << params.goalMode << "\n";
+    out << "goalStrength=" << params.goalStrength << "\n";
+    out << "showGoal=" << params.showGoal << "\n";
+    out << "goalImagePath=" << params.goalImagePath << "\n";
+    
+    std::cout << "Scene saved to " << filename << std::endl;
+  }
+
+  void loadScene(const std::string& filename) {
+    std::ifstream in(filename);
+    if (!in) {
+        std::cerr << "Failed to load scene: " << filename << std::endl;
+        return;
+    }
+    
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        size_t eqPos = line.find('=');
+        if (eqPos == std::string::npos) continue;
+        
+        std::string key = line.substr(0, eqPos);
+        std::string val = line.substr(eqPos + 1);
+        
+        try {
+            if (key == "worldWidth") params.worldWidth = std::stof(val);
+            else if (key == "worldHeight") params.worldHeight = std::stof(val);
+            else if (key == "worldDepth") params.worldDepth = std::stof(val);
+            else if (key == "numParticles") params.numParticles = std::stoi(val);
+            else if (key == "maxParticles") params.maxParticles = std::stoi(val);
+            else if (key == "w_k") params.w_k = std::stof(val);
+            else if (key == "mu_k") params.mu_k = std::stof(val);
+            else if (key == "sigma_k2") params.sigma_k2 = std::stof(val);
+            else if (key == "mu_g") params.mu_g = std::stof(val);
+            else if (key == "sigma_g2") params.sigma_g2 = std::stof(val);
+            else if (key == "c_rep") params.c_rep = std::stof(val);
+            else if (key == "dt") params.dt = std::stof(val);
+            else if (key == "h") params.h = std::stof(val);
+            else if (key == "evolutionEnabled") params.evolutionEnabled = std::stoi(val);
+            else if (key == "birthRate") params.birthRate = std::stof(val);
+            else if (key == "deathRate") params.deathRate = std::stof(val);
+            else if (key == "mutationRate") params.mutationRate = std::stof(val);
+            else if (key == "energyDecay") params.energyDecay = std::stof(val);
+            else if (key == "energyFromGrowth") params.energyFromGrowth = std::stof(val);
+            else if (key == "translateX") params.translateX = std::stof(val);
+            else if (key == "translateY") params.translateY = std::stof(val);
+            else if (key == "translateZ") params.translateZ = std::stof(val);
+            else if (key == "zoom") params.zoom = std::stof(val);
+            else if (key == "stepsPerFrame") params.stepsPerFrame = std::stoi(val);
+            else if (key == "showFields") params.showFields = std::stoi(val);
+            else if (key == "fieldType") params.fieldType = std::stoi(val);
+            else if (key == "foodEnabled") params.foodEnabled = std::stoi(val);
+            else if (key == "foodSpawnRate") params.foodSpawnRate = std::stof(val);
+            else if (key == "foodDecayRate") params.foodDecayRate = std::stof(val);
+            else if (key == "foodMaxAmount") params.foodMaxAmount = std::stof(val);
+            else if (key == "foodConsumptionRadius") params.foodConsumptionRadius = std::stof(val);
+            else if (key == "showFood") params.showFood = std::stoi(val);
+            else if (key == "view3D") params.view3D = std::stoi(val);
+            else if (key == "cameraAngle") params.cameraAngle = std::stof(val);
+            else if (key == "cameraRotation") params.cameraRotation = std::stof(val);
+            else if (key == "cameraDistance") params.cameraDistance = std::stof(val);
+            else if (key == "heightScale") params.heightScale = std::stof(val);
+            else if (key == "glowIntensity") params.glowIntensity = std::stof(val);
+            else if (key == "showWireframe") params.showWireframe = std::stoi(val);
+            else if (key == "ambientLight") params.ambientLight = std::stof(val);
+            else if (key == "particleSize") params.particleSize = std::stof(val);
+            else if (key == "interactionMode") params.interactionMode = std::stoi(val);
+            else if (key == "brushRadius") params.brushRadius = std::stof(val);
+            else if (key == "forceStrength") params.forceStrength = std::stof(val);
+            else if (key == "goalMode") params.goalMode = std::stoi(val);
+            else if (key == "goalStrength") params.goalStrength = std::stof(val);
+            else if (key == "showGoal") params.showGoal = std::stoi(val);
+            else if (key == "goalImagePath") {
+                if (val.length() < 256) strncpy(params.goalImagePath, val.c_str(), 255);
+            }
+        } catch (...) {
+        }
+    }
+    std::cout << "Scene loaded from " << filename << std::endl;
+    // Reinitialize to apply parameters
+    init();
   }
 
   void initFood() {
@@ -334,8 +469,8 @@ class ParticleLeniaSimulation {
     // Create food texture (RGBA16F: R=food amount, G=freshness)
     glGenTextures(1, &foodTexture);
     glBindTexture(GL_TEXTURE_2D, foodTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, foodGridSize, foodGridSize, 
-                 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, foodGridSize, foodGridSize, 0,
+                 GL_RGBA, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -345,12 +480,12 @@ class ParticleLeniaSimulation {
     std::vector<float> foodData(foodGridSize * foodGridSize * 4, 0.0f);
     int totalCells = foodGridSize * foodGridSize;
 
-    #pragma omp parallel
+#pragma omp parallel
     {
       std::mt19937 localRng(std::random_device{}() + omp_get_thread_num());
       std::uniform_real_distribution<float> dist(0.0f, 1.0f);
 
-      #pragma omp for
+#pragma omp for
       for (int i = 0; i < totalCells; i++) {
         if (dist(localRng) < 0.1f) {  // 10% initial food coverage
           foodData[i * 4 + 0] = dist(localRng) * 0.5f;  // Food amount
@@ -358,8 +493,8 @@ class ParticleLeniaSimulation {
         }
       }
     }
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, foodGridSize, foodGridSize, 
-                    GL_RGBA, GL_FLOAT, foodData.data());
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, foodGridSize, foodGridSize, GL_RGBA,
+                    GL_FLOAT, foodData.data());
     glBindTexture(GL_TEXTURE_2D, 0);
   }
 
@@ -368,16 +503,18 @@ class ParticleLeniaSimulation {
     heightmapShader = ComputeShader("shaders/terrain_heightmap.comp");
     heightmapShader.init();
 
-    terrainShader = RenderShader("shaders/terrain.vert", "shaders/terrain.frag");
+    terrainShader =
+        RenderShader("shaders/terrain.vert", "shaders/terrain.frag");
     terrainShader.init();
 
-    particle3DShader = RenderShader("shaders/particle3d.vert", "shaders/particle3d.frag");
+    particle3DShader =
+        RenderShader("shaders/particle3d.vert", "shaders/particle3d.frag");
     particle3DShader.init();
 
     // Create heightmap texture
     glGenTextures(1, &heightmapTexture);
     glBindTexture(GL_TEXTURE_2D, heightmapTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, terrainGridSize, terrainGridSize, 
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, terrainGridSize, terrainGridSize,
                  0, GL_RGBA, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -422,14 +559,15 @@ class ParticleLeniaSimulation {
     glBindVertexArray(terrainVAO);
 
     glBindBuffer(GL_ARRAY_BUFFER, terrainVBO);
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), 
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float),
                  vertices.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, terrainEBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int),
                  indices.data(), GL_STATIC_DRAW);
 
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float),
+                          (void*)0);
     glEnableVertexAttribArray(0);
 
     glBindVertexArray(0);
@@ -442,8 +580,8 @@ class ParticleLeniaSimulation {
     // Spawn particles uniformly in the 3D world bounds
     std::vector<float> data(params.maxParticles * PARTICLE_FLOATS);
 
-    // Parallel initialization with thread-local RNGs
-    #pragma omp parallel
+// Parallel initialization with thread-local RNGs
+#pragma omp parallel
     {
       // Each thread gets its own RNG seeded uniquely
       std::mt19937 localRng(std::random_device{}() + omp_get_thread_num());
@@ -456,7 +594,7 @@ class ParticleLeniaSimulation {
       std::uniform_real_distribution<float> speciesDist(0.0f, 3.0f);
       std::uniform_real_distribution<float> dnaDist(-0.2f, 0.2f);
 
-      #pragma omp for
+#pragma omp for
       for (int i = 0; i < params.maxParticles; i++) {
         int base = i * PARTICLE_FLOATS;
         if (i < params.numParticles) {
@@ -499,10 +637,11 @@ class ParticleLeniaSimulation {
     // === STEP 1: Update food (spawn + decay) ===
     if (params.foodEnabled) {
       foodUpdateShader.use();
-      
+
       // Bind food texture for read/write
-      glBindImageTexture(0, foodTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA16F);
-      
+      glBindImageTexture(0, foodTexture, 0, GL_FALSE, 0, GL_READ_WRITE,
+                         GL_RGBA16F);
+
       // Set uniforms
       static int foodFrame = 0;
       foodUpdateShader.setUniform("u_FoodGridSize", foodGridSize);
@@ -510,7 +649,7 @@ class ParticleLeniaSimulation {
       foodUpdateShader.setUniform("u_FoodDecayRate", params.foodDecayRate);
       foodUpdateShader.setUniform("u_FoodMaxAmount", params.foodMaxAmount);
       foodUpdateShader.setUniform("u_RandomSeed", foodFrame++);
-      
+
       // Dispatch (16x16 work groups)
       int foodWorkGroupsX = (foodGridSize + 15) / 16;
       int foodWorkGroupsY = (foodGridSize + 15) / 16;
@@ -524,12 +663,13 @@ class ParticleLeniaSimulation {
     // Bind buffers
     stepShader.bindBuffer("ParticlesIn", readBuffer, 0);
     stepShader.bindBuffer("ParticlesOut", writeBuffer, 1);
-    
+
     // Bind food texture for read/write (particles consume food)
     if (params.foodEnabled) {
-      glBindImageTexture(0, foodTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA16F);
+      glBindImageTexture(0, foodTexture, 0, GL_FALSE, 0, GL_READ_WRITE,
+                         GL_RGBA16F);
     }
-    
+
     // Bind Goal Texture
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, goalTexture);
@@ -557,10 +697,11 @@ class ParticleLeniaSimulation {
     stepShader.setUniform("u_MutationRate", params.mutationRate);
     stepShader.setUniform("u_EnergyDecay", params.energyDecay);
     stepShader.setUniform("u_EnergyFromGrowth", params.energyFromGrowth);
-    
+
     // Food system uniforms
     stepShader.setUniform("u_FoodGridSize", foodGridSize);
-    stepShader.setUniform("u_FoodConsumptionRadius", params.foodConsumptionRadius);
+    stepShader.setUniform("u_FoodConsumptionRadius",
+                          params.foodConsumptionRadius);
 
     // Random seed for evolution
     static int frame = 0;
@@ -579,7 +720,7 @@ class ParticleLeniaSimulation {
 
     displayShader.use();
     displayShader.bindBuffer("Particles", activeBuffer, 0);
-    
+
     // Bind food texture for display
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, foodTexture);
@@ -611,7 +752,8 @@ class ParticleLeniaSimulation {
     Buffer& activeBuffer = useBufferA ? particleBufferA : particleBufferB;
 
     // === Build camera matrices ===
-    float aspect = static_cast<float>(windowWidth) / static_cast<float>(windowHeight);
+    float aspect =
+        static_cast<float>(windowWidth) / static_cast<float>(windowHeight);
 
     // Camera orbit around center
     float camRadius = params.cameraDistance;
@@ -629,33 +771,43 @@ class ParticleLeniaSimulation {
 
     // Forward, right, up vectors
     float fwd[3] = {target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]};
-    float fwdLen = std::sqrt(fwd[0]*fwd[0] + fwd[1]*fwd[1] + fwd[2]*fwd[2]);
-    fwd[0] /= fwdLen; fwd[1] /= fwdLen; fwd[2] /= fwdLen;
+    float fwdLen =
+        std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
+    fwd[0] /= fwdLen;
+    fwd[1] /= fwdLen;
+    fwd[2] /= fwdLen;
 
-    float right[3] = {
-      fwd[1] * up[2] - fwd[2] * up[1],
-      fwd[2] * up[0] - fwd[0] * up[2],
-      fwd[0] * up[1] - fwd[1] * up[0]
-    };
-    float rightLen = std::sqrt(right[0]*right[0] + right[1]*right[1] + right[2]*right[2]);
-    right[0] /= rightLen; right[1] /= rightLen; right[2] /= rightLen;
+    float right[3] = {fwd[1] * up[2] - fwd[2] * up[1],
+                      fwd[2] * up[0] - fwd[0] * up[2],
+                      fwd[0] * up[1] - fwd[1] * up[0]};
+    float rightLen = std::sqrt(right[0] * right[0] + right[1] * right[1] +
+                               right[2] * right[2]);
+    right[0] /= rightLen;
+    right[1] /= rightLen;
+    right[2] /= rightLen;
 
-    float upVec[3] = {
-      right[1] * fwd[2] - right[2] * fwd[1],
-      right[2] * fwd[0] - right[0] * fwd[2],
-      right[0] * fwd[1] - right[1] * fwd[0]
-    };
+    float upVec[3] = {right[1] * fwd[2] - right[2] * fwd[1],
+                      right[2] * fwd[0] - right[0] * fwd[2],
+                      right[0] * fwd[1] - right[1] * fwd[0]};
 
     // View matrix (column-major for OpenGL)
     float view[16] = {
-      right[0], upVec[0], -fwd[0], 0.0f,
-      right[1], upVec[1], -fwd[1], 0.0f,
-      right[2], upVec[2], -fwd[2], 0.0f,
-      -(right[0]*eye[0] + right[1]*eye[1] + right[2]*eye[2]),
-      -(upVec[0]*eye[0] + upVec[1]*eye[1] + upVec[2]*eye[2]),
-      (fwd[0]*eye[0] + fwd[1]*eye[1] + fwd[2]*eye[2]),
-      1.0f
-    };
+        right[0],
+        upVec[0],
+        -fwd[0],
+        0.0f,
+        right[1],
+        upVec[1],
+        -fwd[1],
+        0.0f,
+        right[2],
+        upVec[2],
+        -fwd[2],
+        0.0f,
+        -(right[0] * eye[0] + right[1] * eye[1] + right[2] * eye[2]),
+        -(upVec[0] * eye[0] + upVec[1] * eye[1] + upVec[2] * eye[2]),
+        (fwd[0] * eye[0] + fwd[1] * eye[1] + fwd[2] * eye[2]),
+        1.0f};
 
     // Perspective projection
     float fov = 60.0f * 3.14159f / 180.0f;
@@ -663,12 +815,22 @@ class ParticleLeniaSimulation {
     float farPlane = 500.0f;
     float tanHalfFov = std::tan(fov / 2.0f);
 
-    float proj[16] = {
-      1.0f / (aspect * tanHalfFov), 0.0f, 0.0f, 0.0f,
-      0.0f, 1.0f / tanHalfFov, 0.0f, 0.0f,
-      0.0f, 0.0f, -(farPlane + nearPlane) / (farPlane - nearPlane), -1.0f,
-      0.0f, 0.0f, -(2.0f * farPlane * nearPlane) / (farPlane - nearPlane), 0.0f
-    };
+    float proj[16] = {1.0f / (aspect * tanHalfFov),
+                      0.0f,
+                      0.0f,
+                      0.0f,
+                      0.0f,
+                      1.0f / tanHalfFov,
+                      0.0f,
+                      0.0f,
+                      0.0f,
+                      0.0f,
+                      -(farPlane + nearPlane) / (farPlane - nearPlane),
+                      -1.0f,
+                      0.0f,
+                      0.0f,
+                      -(2.0f * farPlane * nearPlane) / (farPlane - nearPlane),
+                      0.0f};
 
     // Multiply view * proj -> viewProj (manual matrix multiply)
     float viewProj[16];
@@ -724,7 +886,7 @@ class ParticleLeniaSimulation {
     float totalEnergy = 0.0f;
     float totalAge = 0.0f;
 
-    #pragma omp parallel for reduction(+:localAliveCount, totalEnergy, totalAge)
+#pragma omp parallel for reduction(+ : localAliveCount, totalEnergy, totalAge)
     for (int i = 0; i < params.maxParticles; i++) {
       int base = i * PARTICLE_FLOATS;
       float energy = data[base + 6];  // Energy is now at index 6
@@ -778,14 +940,14 @@ class ParticleLeniaSimulation {
   }
 
   void spawnOrbium(float x, float y, float z) {
-      // Spawn a cluster of particles that should form a soliton
-      int count = 40;
-      float radius = 3.0f;
-      
-      for(int i=0; i<count; i++) {
-          std::uniform_real_distribution<float> dist(-radius, radius);
-          addParticle(x + dist(rng), y + dist(rng), z + dist(rng));
-      }
+    // Spawn a cluster of particles that should form a soliton
+    int count = 40;
+    float radius = 3.0f;
+
+    for (int i = 0; i < count; i++) {
+      std::uniform_real_distribution<float> dist(-radius, radius);
+      addParticle(x + dist(rng), y + dist(rng), z + dist(rng));
+    }
   }
 
   void applyForce(float x, float y, float z, float strength, float radius) {
@@ -793,23 +955,23 @@ class ParticleLeniaSimulation {
     std::vector<float> data = activeBuffer.getData();
 
     for (int i = 0; i < params.maxParticles; i++) {
-        int base = i * PARTICLE_FLOATS;
-        if (data[base + 6] > 0.01f) {
-            float dx = data[base + 0] - x;
-            float dy = data[base + 1] - y;
-            float dz = data[base + 2] - z;
-            float dist2 = dx*dx + dy*dy + dz*dz;
-            
-            if (dist2 < radius * radius) {
-                float dist = sqrt(dist2);
-                float force = strength * (1.0f - dist/radius);
-                if (dist > 0.001f) {
-                    data[base + 3] += (dx / dist) * force;
-                    data[base + 4] += (dy / dist) * force;
-                    data[base + 5] += (dz / dist) * force;
-                }
-            }
+      int base = i * PARTICLE_FLOATS;
+      if (data[base + 6] > 0.01f) {
+        float dx = data[base + 0] - x;
+        float dy = data[base + 1] - y;
+        float dz = data[base + 2] - z;
+        float dist2 = dx * dx + dy * dy + dz * dz;
+
+        if (dist2 < radius * radius) {
+          float dist = sqrt(dist2);
+          float force = strength * (1.0f - dist / radius);
+          if (dist > 0.001f) {
+            data[base + 3] += (dx / dist) * force;
+            data[base + 4] += (dy / dist) * force;
+            data[base + 5] += (dz / dist) * force;
+          }
         }
+      }
     }
     activeBuffer.setData(data);
     Buffer& otherBuffer = useBufferA ? particleBufferB : particleBufferA;
@@ -837,25 +999,31 @@ void processInput(GLFWwindow* window) {
   float angleSpeed = 1.0f;
 
   if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
-    simulation.params.cameraAngle = std::min(89.0f, simulation.params.cameraAngle + angleSpeed);
+    simulation.params.cameraAngle =
+        std::min(89.0f, simulation.params.cameraAngle + angleSpeed);
   }
   if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
-    simulation.params.cameraAngle = std::max(5.0f, simulation.params.cameraAngle - angleSpeed);
+    simulation.params.cameraAngle =
+        std::max(5.0f, simulation.params.cameraAngle - angleSpeed);
   }
   if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
-    simulation.params.cameraRotation = std::fmod(simulation.params.cameraRotation - rotSpeed + 360.0f, 360.0f);
+    simulation.params.cameraRotation =
+        std::fmod(simulation.params.cameraRotation - rotSpeed + 360.0f, 360.0f);
   }
   if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
-    simulation.params.cameraRotation = std::fmod(simulation.params.cameraRotation + rotSpeed, 360.0f);
+    simulation.params.cameraRotation =
+        std::fmod(simulation.params.cameraRotation + rotSpeed, 360.0f);
   }
 
   // Zoom with Q/E
   float zoomSpeed = 1.0f;
   if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
-    simulation.params.cameraDistance = std::max(10.0f, simulation.params.cameraDistance - zoomSpeed);
+    simulation.params.cameraDistance =
+        std::max(10.0f, simulation.params.cameraDistance - zoomSpeed);
   }
   if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
-    simulation.params.cameraDistance = std::min(200.0f, simulation.params.cameraDistance + zoomSpeed);
+    simulation.params.cameraDistance =
+        std::min(200.0f, simulation.params.cameraDistance + zoomSpeed);
   }
 }
 
@@ -924,6 +1092,20 @@ void renderUI() {
 
   ImGui::Separator();
 
+  // === SCENE MANAGEMENT ===
+  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "SCENE MANAGEMENT");
+  static char sceneFilename[128] = "scene.txt";
+  ImGui::InputText("Filename", sceneFilename, 128);
+  if (ImGui::Button("Export Scene", ImVec2(buttonWidth, 0))) {
+    simulation.saveScene(sceneFilename);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Import Scene", ImVec2(buttonWidth, 0))) {
+    simulation.loadScene(sceneFilename);
+  }
+
+  ImGui::Separator();
+
   // === ENVIRONMENT ===
   if (ImGui::CollapsingHeader("Environment Settings",
                               ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -933,14 +1115,30 @@ void renderUI() {
                      100.0f);
     ImGui::DragFloat("Arena Height", &simulation.params.worldHeight, 0.5f,
                      10.0f, 100.0f);
-    ImGui::DragFloat("Arena Depth", &simulation.params.worldDepth, 0.5f,
-                     10.0f, 100.0f);
+    ImGui::DragFloat("Arena Depth", &simulation.params.worldDepth, 0.5f, 10.0f,
+                     100.0f);
     ImGui::PopItemWidth();
 
     int numParticles = simulation.params.numParticles;
     if (ImGui::DragInt("Spawn Count", &numParticles, 5, 10, 1000)) {
       simulation.params.numParticles = numParticles;
     }
+  }
+
+  // === MOUSE INTERACTION ===
+  if (ImGui::CollapsingHeader("Mouse Interaction", ImGuiTreeNodeFlags_DefaultOpen)) {
+      const char* modes[] = { "Navigation Only", "Paint Particles", "Repel Force", "Attract Force", "Spawn Orbium" };
+      ImGui::Combo("Active Tool", &simulation.params.interactionMode, modes, 5);
+      
+      if (simulation.params.interactionMode > 0) {
+          ImGui::Indent();
+          ImGui::DragFloat("Brush Radius", &simulation.params.brushRadius, 0.5f, 1.0f, 50.0f);
+          if (simulation.params.interactionMode == 2 || simulation.params.interactionMode == 3) {
+             ImGui::DragFloat("Force Strength", &simulation.params.forceStrength, 0.01f, 0.0f, 5.0f);
+          }
+          ImGui::Unindent();
+          ImGui::TextColored(ImVec4(1,1,0,1), "Hold Left Click to use tool");
+      }
   }
 
   // === INTERACTION PHYSICS ===
@@ -986,7 +1184,7 @@ void renderUI() {
       ImGui::Spacing();
       ImGui::TextDisabled("Population Dynamics");
       ImGui::DragFloat("Reproduction Chance", &simulation.params.birthRate,
-             0.0001f, 0.0f, 0.01f, "%.5f");
+                       0.0001f, 0.0f, 0.01f, "%.5f");
       ImGui::DragFloat("Mortality Baseline", &simulation.params.deathRate,
                        0.0001f, 0.0f, 0.01f, "%.5f");
 
@@ -1007,65 +1205,76 @@ void renderUI() {
   // === FOOD SYSTEM ===
   if (ImGui::CollapsingHeader("Food System", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("Enable Food", &simulation.params.foodEnabled);
-    
+
     if (simulation.params.foodEnabled) {
       ImGui::Checkbox("Show Food", &simulation.params.showFood);
-      
+
       ImGui::Spacing();
       ImGui::TextDisabled("Food Dynamics");
-      ImGui::DragFloat("Spawn Rate", &simulation.params.foodSpawnRate,
-                       0.0001f, 0.0f, 0.01f, "%.4f");
-      ImGui::DragFloat("Decay Rate", &simulation.params.foodDecayRate,
-                       0.0001f, 0.0f, 0.01f, "%.4f");
-      ImGui::DragFloat("Max Amount", &simulation.params.foodMaxAmount,
-                       0.1f, 0.1f, 5.0f);
-      ImGui::DragFloat("Consumption Radius", &simulation.params.foodConsumptionRadius,
-                       0.1f, 0.5f, 10.0f);
+      ImGui::DragFloat("Spawn Rate", &simulation.params.foodSpawnRate, 0.0001f,
+                       0.0f, 0.01f, "%.4f");
+      ImGui::DragFloat("Decay Rate", &simulation.params.foodDecayRate, 0.0001f,
+                       0.0f, 0.01f, "%.4f");
+      ImGui::DragFloat("Max Amount", &simulation.params.foodMaxAmount, 0.1f,
+                       0.1f, 5.0f);
+      ImGui::DragFloat("Consumption Radius",
+                       &simulation.params.foodConsumptionRadius, 0.1f, 0.5f,
+                       10.0f);
     }
   }
 
   // === GOAL SYSTEM ===
   if (ImGui::CollapsingHeader("Goal Seeking", ImGuiTreeNodeFlags_DefaultOpen)) {
-      bool changed = false;
-      const char* goalModes[] = {"None", "Circle", "Box", "Text 'HI'", "Image (BMP)"};
-      if (ImGui::Combo("Goal Pattern", &simulation.params.goalMode, goalModes, 5)) {
-          changed = true;
+    bool changed = false;
+    const char* goalModes[] = {"None", "Circle", "Box", "Text 'HI'",
+                               "Image (BMP)"};
+    if (ImGui::Combo("Goal Pattern", &simulation.params.goalMode, goalModes,
+                     5)) {
+      changed = true;
+    }
+
+    if (simulation.params.goalMode == 4) {
+      if (ImGui::InputText("BMP Filename", simulation.params.goalImagePath,
+                           256)) {
+        // Delay update until button press or Enter?
+        // InputText returns true on Enter or lost focus with change
       }
-      
-      if (simulation.params.goalMode == 4) {
-          if (ImGui::InputText("BMP Filename", simulation.params.goalImagePath, 256)) {
-             // Delay update until button press or Enter? 
-             // InputText returns true on Enter or lost focus with change
-          }
-          if (ImGui::Button("Reload Image")) {
-              changed = true;
-          }
-          ImGui::SameLine();
-          ImGui::TextDisabled("(Supports 24-bit .bmp)");
+      if (ImGui::Button("Reload Image")) {
+        changed = true;
       }
-      
-      ImGui::DragFloat("Attraction Strength", &simulation.params.goalStrength, 0.01f, 0.0f, 2.0f);
-      
-      if (changed) {
-          simulation.updateGoalTexture();
-      }
+      ImGui::SameLine();
+      ImGui::TextDisabled("(Supports 24-bit .bmp)");
+    }
+
+    ImGui::DragFloat("Attraction Strength", &simulation.params.goalStrength,
+                     0.01f, 0.0f, 2.0f);
+
+    if (changed) {
+      simulation.updateGoalTexture();
+    }
   }
 
   // === VISUALIZATION ===
-  if (ImGui::CollapsingHeader("Visualization", ImGuiTreeNodeFlags_DefaultOpen)) {
+  if (ImGui::CollapsingHeader("Visualization",
+                              ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Checkbox("3D View", &simulation.params.view3D);
 
     if (simulation.params.view3D) {
       ImGui::Indent();
       ImGui::TextDisabled("Camera Controls");
-      ImGui::DragFloat("Camera Angle", &simulation.params.cameraAngle, 1.0f, 5.0f, 89.0f);
-      ImGui::DragFloat("Camera Rotation", &simulation.params.cameraRotation, 2.0f, 0.0f, 360.0f);
-      ImGui::DragFloat("Camera Distance", &simulation.params.cameraDistance, 1.0f, 10.0f, 200.0f);
+      ImGui::DragFloat("Camera Angle", &simulation.params.cameraAngle, 1.0f,
+                       5.0f, 89.0f);
+      ImGui::DragFloat("Camera Rotation", &simulation.params.cameraRotation,
+                       2.0f, 0.0f, 360.0f);
+      ImGui::DragFloat("Camera Distance", &simulation.params.cameraDistance,
+                       1.0f, 10.0f, 200.0f);
 
       ImGui::Spacing();
       ImGui::TextDisabled("Particles");
-      ImGui::DragFloat("Particle Size", &simulation.params.particleSize, 1.0f, 1.0f, 50.0f);
-      ImGui::DragFloat("Glow Intensity", &simulation.params.glowIntensity, 0.1f, 0.0f, 3.0f);
+      ImGui::DragFloat("Particle Size", &simulation.params.particleSize, 1.0f,
+                       1.0f, 50.0f);
+      ImGui::DragFloat("Glow Intensity", &simulation.params.glowIntensity, 0.1f,
+                       0.0f, 3.0f);
       ImGui::Unindent();
     } else {
       ImGui::Checkbox("Render Field Overlay", &simulation.params.showFields);
@@ -1148,6 +1357,46 @@ int main() {
       }
       if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
         ImVec2 pos = ImGui::GetMousePos();
+      
+      // === INTERACTION TOOLS ===
+      if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+          ImVec2 mousePos = ImGui::GetMousePos();
+          ImVec2 worldPos = screenToWorld(mousePos.x, mousePos.y);
+          
+          if (simulation.params.interactionMode == 1) { // Paint Particles
+              // Spawn multiple particles per frame for "brush" feel
+              for(int k=0; k<5; k++) {
+                  std::uniform_real_distribution<float> dist(-simulation.params.brushRadius, simulation.params.brushRadius);
+                  float rx = dist(simulation.rng);
+                  float ry = dist(simulation.rng);
+                  // Circular brush
+                  if (rx*rx + ry*ry <= simulation.params.brushRadius*simulation.params.brushRadius) {
+                      // Spread in Z slightly to avoid 2D planarity issues if in 3D
+                      float rz = dist(simulation.rng) * 0.1f; 
+                      simulation.addParticle(worldPos.x + rx, worldPos.y + ry, rz);
+                  }
+              }
+          }
+          else if (simulation.params.interactionMode == 2) { // Repel
+              simulation.applyForce(worldPos.x, worldPos.y, 0.0f, simulation.params.forceStrength, simulation.params.brushRadius);
+          }
+          else if (simulation.params.interactionMode == 3) { // Attract
+              simulation.applyForce(worldPos.x, worldPos.y, 0.0f, -simulation.params.forceStrength, simulation.params.brushRadius);
+          }
+          else if (simulation.params.interactionMode == 4) { // Spawn Orbium
+              // Single click trigger check handled by IsMouseClicked
+          }
+      }
+      
+      // Separate check for single-click actions (Orbium)
+      if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+           ImVec2 mousePos = ImGui::GetMousePos();
+           ImVec2 worldPos = screenToWorld(mousePos.x, mousePos.y);
+           
+           if (simulation.params.interactionMode == 4) { // Spawn Orbium
+               simulation.spawnOrbium(worldPos.x, worldPos.y, 0.0f);
+           }
+      }
         float dx = (pos.x - panStart.x) / WINDOW_WIDTH *
                    simulation.params.worldWidth * 2.0f / simulation.params.zoom;
         float dy = (pos.y - panStart.y) / WINDOW_HEIGHT *
@@ -1163,6 +1412,38 @@ int main() {
         simulation.params.zoom *= (1.0f + scroll * 0.1f);
         simulation.params.zoom =
             std::max(0.1f, std::min(10.0f, simulation.params.zoom));
+      }
+      
+      // === INTERACTION TOOLS ===
+      if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+          ImVec2 mousePos = ImGui::GetMousePos();
+          ImVec2 worldPos = screenToWorld(mousePos.x, mousePos.y);
+          
+          if (simulation.params.interactionMode == 1) { // Paint Particles
+              for(int k=0; k<5; k++) {
+                  std::uniform_real_distribution<float> dist(-simulation.params.brushRadius, simulation.params.brushRadius);
+                  float rx = dist(simulation.rng);
+                  float ry = dist(simulation.rng);
+                  if (rx*rx + ry*ry <= simulation.params.brushRadius*simulation.params.brushRadius) {
+                      float rz = dist(simulation.rng) * 0.1f;
+                      simulation.addParticle(worldPos.x + rx, worldPos.y + ry, rz);
+                  }
+              }
+          }
+          else if (simulation.params.interactionMode == 2) { // Repel
+              simulation.applyForce(worldPos.x, worldPos.y, 0.0f, simulation.params.forceStrength, simulation.params.brushRadius);
+          }
+          else if (simulation.params.interactionMode == 3) { // Attract
+              simulation.applyForce(worldPos.x, worldPos.y, 0.0f, -simulation.params.forceStrength, simulation.params.brushRadius);
+          }
+      }
+      
+      if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+           ImVec2 mousePos = ImGui::GetMousePos();
+           ImVec2 worldPos = screenToWorld(mousePos.x, mousePos.y);
+           if (simulation.params.interactionMode == 4) { // Spawn Orbium
+               simulation.spawnOrbium(worldPos.x, worldPos.y, 0.0f);
+           }
       }
     }
 
